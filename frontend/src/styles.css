@@ -180,7 +180,7 @@ h3 { font-size: 19px; line-height: 1.28; letter-spacing: -.025em; }
 
 .filter-bar { display: flex; gap: 10px; margin-bottom: 17px; }
 .filter-bar select { min-width: 190px; }
-.metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
 .metric { padding: 22px; }
 .metric span, .metric small { display: block; font-size: 10px; color: #92a2a8; }
 .metric span { font-weight: 800; letter-spacing: .08em; }
@@ -203,6 +203,10 @@ h3 { font-size: 19px; line-height: 1.28; letter-spacing: -.025em; }
 .person-row strong { font-size: 10px; }
 .person-row small { font-size: 9px; color: #9ca9ad; margin-top: 3px; }
 .person-row b { color: #55b78c; }
+.hr-person-list { max-height: 350px; overflow-y: auto; }
+.hr-subsection { border-top: 1px solid #e9eeee; margin-top: 22px; padding-top: 19px; }
+.hr-subsection h3 { font-size: 15px; margin: 0 0 5px; }
+.hr-subsection > p { color: #8b9da0; font-size: 11px; line-height: 1.5; margin: 0 0 10px; }
 .participation { margin-top: 16px; }
 .table-wrap { overflow: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 11px; }
@@ -235,6 +239,7 @@ td:first-child { font-weight: 700; color: #263b46; min-width: 190px; }
 .batch-row button { border: 0; background: none; color: #b56760; font-size: 10px; font-weight: 700; }
 
 @media (max-width: 1180px) {
+  .metrics-grid { grid-template-columns: repeat(2, 1fr); }
   .hero-grid { grid-template-columns: 1fr 1fr; }
   .progress-card { grid-column: span 2; min-height: 170px; }
   .progress-card .ring { float: left; margin: 0 24px 0 0; }

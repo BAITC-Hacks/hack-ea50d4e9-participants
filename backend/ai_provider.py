@@ -43,6 +43,15 @@ CHOICE_SCHEMA = {
 }
 
 
+def _ai_pool(candidates, limit=8):
+    """Include the strongest available critical-gap activity in the AI context."""
+    pool = candidates[:limit]
+    critical = next((item for item in candidates if item["factors"]["critical_gap_closure"] > 0), None)
+    if critical and critical not in pool:
+        pool = pool[:-1] + [critical]
+    return pool
+
+
 def _request_payload(state, candidates):
     return {
         "target": state["target"],
@@ -66,7 +75,7 @@ def _request_payload(state, candidates):
                 ],
                 "evidence_ids": [f"{candidate['event_id']}:{code}" for code in REASON_CODES],
             }
-            for candidate in candidates[:8]
+            for candidate in _ai_pool(candidates)
         ],
     }
 
@@ -76,7 +85,12 @@ def _validate(response, candidates):
         raise ValueError("AI response has no choices")
     if not 1 <= len(response["choices"]) <= 3:
         raise ValueError("AI must choose 1–3 events")
-    allowed = {item["event_id"]: item for item in candidates[:8]}
+    pool = _ai_pool(candidates)
+    allowed = {item["event_id"]: item for item in pool}
+    if any(item["factors"]["critical_gap_closure"] > 0 for item in pool):
+        first = allowed.get(response["choices"][0].get("event_id")) if isinstance(response["choices"][0], dict) else None
+        if first is None or first["factors"]["critical_gap_closure"] <= 0:
+            raise ValueError("AI must rank an available critical-gap activity first")
     seen = set()
     result = []
     for choice in response["choices"]:
@@ -115,6 +129,7 @@ async def _openai(client, payload, timeout):
             "instructions": (
                 "Ты ранжируешь только допустимые учебные активности. Выбери 1–3 разных event_id. "
                 "Учитывай критичные разрывы, реальный прирост, историю и доступность. "
+                "Если есть кандидат с critical_gap_closure > 0, поставь такого кандидата первым. "
                 "Для каждого выбора укажи минимум три разных reason_codes и соответствующие evidence_ids. "
                 "Не добавляй событий и фактов. Верни только структуру по схеме."
             ),
@@ -145,6 +160,7 @@ async def _nvidia(client, payload, timeout):
                     "each choice contains event_id, reason_codes, evidence_ids. "
                     "Reason codes: target, skill_gap, history, availability. "
                     "Use at least three distinct reason_codes per choice. "
+                    "If any candidate has critical_gap_closure > 0, rank one of them first. "
                     "Each evidence ID must be event_id:reason_code. Never invent facts or IDs."
                 )},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

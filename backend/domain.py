@@ -126,7 +126,7 @@ def progress(employee, records, completions, catalog):
             if targets["long_term"] else None
         ),
         "mode": targets["mode"],
-        "coverage_pct": round(100 * covered / total) if total else 100,
+        "coverage_pct": round(100 * covered / total) if total else (None if target is None else 100),
         "gaps": gaps,
         "confirmed_skills": effective["confirmed"],
         "modelled_skills": effective["modelled"],
@@ -289,7 +289,10 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
 
         same_type = [r for r in records if r["status"] in ("completed", "dropped", "no_show") and
                      events_by_id.get(r["event_id"], {}).get("type") == event["type"]]
-        same_type_completed = sum(r["status"] == "completed" for r in same_type)
+        same_type_completed = sum(r["status"] == "completed" for r in same_type) + sum(
+            events_by_id.get(completion["event_id"], {}).get("type") == event["type"]
+            for completion in completions
+        )
         same_event_missed = sum(r["status"] in ("no_show", "dropped") for r in history)
         developed_skills = {item["skill_id"] for item in event["develops_skills"]}
         similar_history = [
@@ -333,7 +336,7 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
             {
                 "code": "history",
                 "text": (
-                    f"Похожих завершено: {same_type_completed}; "
+                    f"Активностей такого типа завершено: {same_type_completed}; "
                     f"пропусков/прерываний по тем же навыкам: {similar_missed}; "
                     f"отказов: {similar_declined}"
                 ),
@@ -407,4 +410,20 @@ def choose_baseline(candidates, count=3):
         if candidate["factors"]["weighted_gap_closure"] > 0
         or candidate["factors"]["long_term_gap_closure"] > 0
     ]
+    if count <= 0:
+        return []
+    critical = next((candidate for candidate in relevant if candidate["factors"]["critical_gap_closure"] > 0), None)
+    if critical:
+        return [critical] + [candidate for candidate in relevant if candidate["event_id"] != critical["event_id"]][:count - 1]
     return relevant[:count]
+
+
+def next_step_status(state, candidates):
+    """Keep absent goals separate from uncovered gaps in HR reporting."""
+    if candidates:
+        return "has_step"
+    if state["target"] is None:
+        return "no_goal"
+    if any(gap["gap"] > 0 for gap in state["gaps"]):
+        return "catalog_gap"
+    return "goal_met"
