@@ -1,5 +1,6 @@
 """Constrained LLM reranking. Business rules stay in domain.py."""
 
+import asyncio
 import json
 import logging
 
@@ -175,12 +176,12 @@ async def rerank(state, candidates):
         return None, "fallback"
     payload = _request_payload(state, candidates)
     async with httpx.AsyncClient() as client:
-        for position, (name, call) in enumerate(order):
+        for name, call in order:
             timeout = min(AI_TIMEOUT_SECONDS / len(order), 6.5) if len(order) > 1 else AI_TIMEOUT_SECONDS
             try:
-                raw = await call(client, payload, timeout)
+                raw = await asyncio.wait_for(call(client, payload, timeout), timeout=timeout)
                 return _validate(raw, candidates), name
-            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            except (asyncio.TimeoutError, httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
                 LOGGER.warning("AI provider %s failed: %s", name, type(exc).__name__)
                 continue
     return None, "fallback"

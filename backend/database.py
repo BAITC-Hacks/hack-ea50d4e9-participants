@@ -49,18 +49,19 @@ def init_database():
             "INSERT INTO import_batches(id,label,employee_count,activity_count) VALUES ('base','Стартовый набор',%s,%s)",
             (len(employees), len(activities)),
         )
-        conn.executemany(
-            "INSERT INTO employees(employee_id,batch_id,profile) VALUES (%s,'base',%s)",
-            [(item["employee_id"], Jsonb(item)) for item in employees],
-        )
-        conn.executemany(
-            """INSERT INTO activity_records(record_id,employee_id,event_id,batch_id,activity)
-               VALUES (%s,%s,%s,'base',%s)""",
-            [
-                (item["record_id"], item["employee_id"], item["event_id"], Jsonb(item))
-                for item in activities
-            ],
-        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO employees(employee_id,batch_id,profile) VALUES (%s,'base',%s)",
+                [(item["employee_id"], Jsonb(item)) for item in employees],
+            )
+            cur.executemany(
+                """INSERT INTO activity_records(record_id,employee_id,event_id,batch_id,activity)
+                   VALUES (%s,%s,%s,'base',%s)""",
+                [
+                    (item["record_id"], item["employee_id"], item["event_id"], Jsonb(item))
+                    for item in activities
+                ],
+            )
 
 
 def get_catalog(conn):
@@ -134,19 +135,21 @@ def insert_batch(conn, batch_id, label, employees, activities):
         (batch_id, label, len(employees), len(activities)),
     )
     if employees:
-        conn.executemany(
-            "INSERT INTO employees(employee_id,batch_id,profile) VALUES (%s,%s,%s)",
-            [(employee["employee_id"], batch_id, Jsonb(employee)) for employee in employees],
-        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO employees(employee_id,batch_id,profile) VALUES (%s,%s,%s)",
+                [(employee["employee_id"], batch_id, Jsonb(employee)) for employee in employees],
+            )
     if activities:
-        conn.executemany(
-            """INSERT INTO activity_records(record_id,employee_id,event_id,batch_id,activity)
-               VALUES (%s,%s,%s,%s,%s)""",
-            [
-                (activity["record_id"], activity["employee_id"], activity["event_id"], batch_id, Jsonb(activity))
-                for activity in activities
-            ],
-        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO activity_records(record_id,employee_id,event_id,batch_id,activity)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                [
+                    (activity["record_id"], activity["employee_id"], activity["event_id"], batch_id, Jsonb(activity))
+                    for activity in activities
+                ],
+            )
 
 
 def delete_batch(conn, batch_id):

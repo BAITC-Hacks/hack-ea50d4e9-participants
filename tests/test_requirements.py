@@ -1,10 +1,14 @@
-import unittest
 import sys
 import types
+import unittest
+from pathlib import Path
 
-# The pure response validator does not need the HTTP client.  Keeping this
-# tiny stub lets the unit tests run before backend dependencies are installed
-# (for example in a fresh CI checkout).
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+# The pure response validator does not need the HTTP client. This stub keeps
+# the rule tests runnable before backend dependencies are installed.
 try:
     import httpx  # noqa: F401
 except ModuleNotFoundError:
@@ -13,8 +17,8 @@ except ModuleNotFoundError:
     httpx_stub.AsyncClient = object
     sys.modules["httpx"] = httpx_stub
 
-from ai_provider import _validate
-from domain import eligible_candidates, progress
+from ai_provider import _validate  # noqa: E402
+from domain import eligible_candidates, progress  # noqa: E402
 
 
 def catalog(events, profiles=None):
@@ -33,14 +37,14 @@ def catalog(events, profiles=None):
     }
 
 
-def employee(grade="Middle", goal=None):
+def employee(grade="Middle"):
     return {
         "employee_id": "E1",
         "role": "Engineer",
         "grade": grade,
         "skills": {"system": 2, "public": 0},
         "last_review_date": "2026-01-01",
-        "career_goal": goal,
+        "career_goal": None,
     }
 
 
@@ -63,12 +67,11 @@ def event(event_id, skill):
 
 class DomainRequirementsTests(unittest.TestCase):
     def test_max_grade_without_goal_has_no_invented_trajectory(self):
-        lead = employee("Lead")
         lead_profile = [{
             "role": "Engineer", "grade": "Lead",
             "required_skills": {"system": 5}, "critical_skills": ["system"],
         }]
-        state = progress(lead, [], [], catalog([], profiles=lead_profile))
+        state = progress(employee("Lead"), [], [], catalog([], profiles=lead_profile))
         self.assertIsNone(state["target"])
         self.assertEqual("maintain", state["mode"])
 
@@ -79,7 +82,7 @@ class DomainRequirementsTests(unittest.TestCase):
         self.assertEqual([], candidates)
         self.assertEqual(1, excluded["no_gain"])
 
-    def test_explanation_contains_current_required_and_expected_levels(self):
+    def test_explanation_has_current_required_and_expected_levels(self):
         candidates, _ = eligible_candidates(
             employee(), [], [], catalog([event("SYSTEM", "system")])
         )
@@ -88,7 +91,7 @@ class DomainRequirementsTests(unittest.TestCase):
         self.assertIn("требуется 4", reason["text"])
         self.assertIn("(+1)", reason["text"])
 
-    def test_ai_choice_requires_three_independent_explanation_factors(self):
+    def test_ai_choice_requires_three_explanation_factors(self):
         candidates, _ = eligible_candidates(
             employee(), [], [], catalog([event("SYSTEM", "system")])
         )

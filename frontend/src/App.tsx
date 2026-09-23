@@ -1,327 +1,233 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
-type DemoRole = 'employee' | 'hr'
-
-type EmployeeSummary = {
-  employee_id: string
-  full_name: string
-  role: string
-  grade: string
-  department: string
-}
-
-type ProfileResponse = {
-  profile: EmployeeSummary & {
-    tenure_months: number
-    work_format: string
-    preferred_language: string
-  }
-  history: Array<{ event_id: string; event_title: string; date: string; status: string }>
-  mandatory: Array<{ event_id: string; title: string; status: string }>
-}
-
-type Gap = {
-  skill_id: string
-  name: string
-  confirmed: number
-  modelled: number
-  required: number
-  gap: number
-  critical: boolean
-}
-
+type Person = { employee_id: string; full_name: string; role: string; grade: string; department: string; preferred_language: string }
+type SkillGap = { skill_id: string; name: string; confirmed: number; modelled: number; required: number; gap: number; critical: boolean }
 type Progress = {
-  as_of_date: string
   target: { role: string; grade: string } | null
+  milestone: { role: string; grade: string } | null
+  long_term_goal: { role: string; grade: string } | null
+  mode: string
   coverage_pct: number
-  gaps: Gap[]
-  applied: Array<{ event_id: string; skill_id: string; before: number; after: number }>
+  gaps: SkillGap[]
+  applied: { skill_id: string; before: number; after: number; event_id: string }[]
+  uncertain_record_ids: string[]
+  as_of_date: string
 }
+type History = { event_id: string; event_title: string; date: string; status: string; source?: string }
+type Detail = { profile: Person & { hire_date: string; tenure_months: number; work_format: string; career_goal: { target_role: string; target_grade: string } | null; last_review_date: string }; history: History[]; mandatory: { event_id: string; title: string; status: string }[] }
+type Impact = { skill_id: string; name: string; before: number; after: number; gain: number; required: number; gap_before: number; closes_gap: number; critical: boolean }
+type Recommendation = { event_id: string; title: string; description: string; type: string; format: string; duration_hours: number; next_session: string | null; score: number; impacts: Impact[]; reasons: { code: string; text: string }[]; explanation: string }
+type RecommendationResponse = { items: Recommendation[]; provider: string; candidate_count: number; excluded: Record<string, number>; duration_ms: number; cached?: boolean }
+type HrData = { employee_count: number; without_step_count: number; gaps: { skill_id: string; name: string; employee_count: number; denominator: number; share_pct: number }[]; without_step: { employee_id: string; full_name: string; role: string; grade: string; reasons: Record<string, number> }[]; participation: { event_id: string; title: string; total: number; completed: number; no_show: number; dropped: number; declined: number; overdue: number; completion_pct: number }[]; filters: { roles: string[]; grades: string[]; departments: string[] } }
+type Meta = { as_of_date: string; dataset_version: string; batches: { id: string; label: string; employee_count: number; activity_count: number }[]; demo_mode: boolean }
 
-type Recommendation = {
-  event_id: string
-  title: string
-  description: string
-  type: string
-  format: string
-  duration_hours: number
-  score: number
-  explanation: string
-  impacts: Array<{
-    skill_id: string
-    name: string
-    before: number
-    after: number
-    required: number
-    gain: number
-    critical: boolean
-  }>
-}
+const statusLabel: Record<string, string> = { completed: 'Завершено', in_progress: 'В процессе', dropped: 'Прервано', no_show: 'Пропуск', declined: 'Отказ', overdue: 'Просрочено', not_assigned: 'Не назначено' }
+const formatLabel: Record<string, string> = { online: 'Онлайн', offline: 'Очно', self_paced: 'Самостоятельно' }
+const exclusionLabel: Record<string, string> = { mandatory: 'обязательное', audience: 'не подходит по роли или грейду', prerequisites: 'не хватает входных навыков', completed: 'уже завершено', in_progress: 'уже в процессе', no_session: 'нет будущей сессии', repeat_cooldown: 'пауза между встречами', no_gain: 'не даёт прироста' }
 
-type RecommendationsResponse = {
-  items: Recommendation[]
-  provider: string
-  candidate_count: number
-}
-
-type HrOverview = {
-  employee_count: number
-  without_step_count: number
-  gaps: Array<{ skill_id: string; name: string; employee_count: number; denominator: number; share_pct: number }>
-  without_step: Array<{ employee_id: string; full_name: string; role: string; grade: string }>
-  participation: Array<{
-    event_id: string
-    title: string
-    total: number
-    completed: number
-    no_show: number
-    dropped: number
-    declined: number
-    overdue: number
-    completion_pct: number
-  }>
-  filters: { roles: string[]; grades: string[]; departments: string[] }
-}
-
-type ImportPreview = {
-  employee_count: number
-  activity_count: number
-  valid: boolean
-  errors: string[]
-  batch_id?: string
-  already_imported?: boolean
-}
-
-async function request<T>(path: string, role: DemoRole, employeeId: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers)
-  headers.set('x-demo-role', role)
-  headers.set('x-demo-employee', employeeId)
-  if (init?.body && !(init.body instanceof FormData)) headers.set('content-type', 'application/json')
-  const response = await fetch(path, { ...init, headers })
+async function api<T>(path: string, role: string, employeeId: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    ...options,
+    headers: { 'X-Demo-Role': role, 'X-Demo-Employee': employeeId, ...(options.headers || {}) }
+  })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText })) as { detail?: unknown }
-    const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body)
-    throw new Error(detail)
+    let message = `Ошибка ${response.status}`
+    try {
+      const body = await response.json()
+      message = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+    } catch { /* keep status */ }
+    throw new Error(message)
   }
   return response.json() as Promise<T>
 }
 
-function StatusPill({ children, tone = 'neutral' }: { children: string; tone?: 'neutral' | 'good' | 'warn' }) {
-  return <span className={`pill pill-${tone}`}>{children}</span>
+function targetName(target: { role: string; grade: string } | null) {
+  return target ? `${target.role} · ${target.grade}` : 'Цель не задана'
 }
 
-function App() {
-  const [role, setRole] = useState<DemoRole>('employee')
-  const [employeeId, setEmployeeId] = useState('E0002')
-  const [employees, setEmployees] = useState<EmployeeSummary[]>([])
-  const [profile, setProfile] = useState<ProfileResponse | null>(null)
+function Logo() {
+  return <div className="brand"><div className="brand-mark"><span>✦</span></div><div><strong>Career Quest</strong><small>платформа развития</small></div></div>
+}
+
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return <div className="empty-state"><div className="empty-icon">✧</div><h3>{title}</h3><p>{text}</p></div>
+}
+
+function Ring({ value }: { value: number }) {
+  return <div className="ring" style={{ background: `conic-gradient(#69d3ae ${value}%, #293b50 ${value}% 100%)` }}><div><strong>{value}%</strong><span>покрытие цели</span></div></div>
+}
+
+export default function App() {
+  const [role, setRole] = useState<'employee' | 'hr'>('employee')
+  const [view, setView] = useState<'profile' | 'hr' | 'import'>('profile')
+  const [people, setPeople] = useState<Person[]>([])
+  // In employee mode the server only returns this selected profile; HR mode
+  // refreshes the directory and receives the full authorised list.
+  const [selected, setSelected] = useState('E0028')
+  const [meta, setMeta] = useState<Meta | null>(null)
+  const [detail, setDetail] = useState<Detail | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
-  const [recommendations, setRecommendations] = useState<RecommendationsResponse | null>(null)
-  const [overview, setOverview] = useState<HrOverview | null>(null)
-  const [filters, setFilters] = useState({ role: '', grade: '', department: '' })
-  const [busy, setBusy] = useState(false)
+  const [recommendations, setRecommendations] = useState<RecommendationResponse | null>(null)
+  const [loadingProfile, setLoadingProfile] = useState(false)
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false)
+  const [busyEvent, setBusyEvent] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [hr, setHr] = useState<HrData | null>(null)
+  const [hrFilters, setHrFilters] = useState({ role: '', grade: '', department: '' })
+  const [employeeFile, setEmployeeFile] = useState<File | null>(null)
+  const [historyFile, setHistoryFile] = useState<File | null>(null)
+  const [importLabel, setImportLabel] = useState('Проверочные профили')
+  const [importResult, setImportResult] = useState<{ valid?: boolean; errors?: string[]; employee_count?: number; activity_count?: number; batch_id?: string; already_imported?: boolean } | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
 
-  const loadEmployee = useCallback(async () => {
-    if (!employeeId.trim()) return
-    setBusy(true)
-    setError('')
-    try {
-      const [detail, state, next] = await Promise.all([
-        request<ProfileResponse>(`/api/employees/${encodeURIComponent(employeeId)}`, role, employeeId),
-        request<Progress>(`/api/employees/${encodeURIComponent(employeeId)}/progress`, role, employeeId),
-        request<RecommendationsResponse>(`/api/employees/${encodeURIComponent(employeeId)}/recommendations`, role, employeeId),
-      ])
-      setProfile(detail)
-      setProgress(state)
-      setRecommendations(next)
-    } catch (cause) {
-      setProfile(null)
-      setProgress(null)
-      setRecommendations(null)
-      setError(cause instanceof Error ? cause.message : 'Не удалось загрузить профиль')
-    } finally {
-      setBusy(false)
-    }
-  }, [employeeId, role])
-
-  const loadOverview = useCallback(async () => {
-    setBusy(true)
-    setError('')
-    try {
-      const query = new URLSearchParams()
-      if (filters.role) query.set('role', filters.role)
-      if (filters.grade) query.set('grade', filters.grade)
-      if (filters.department) query.set('department', filters.department)
-      const [people, summary] = await Promise.all([
-        request<EmployeeSummary[]>('/api/employees', 'hr', employeeId),
-        request<HrOverview>(`/api/hr/overview?${query}`, 'hr', employeeId),
-      ])
-      setEmployees(people)
-      setOverview(summary)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось загрузить HR-дашборд')
-    } finally {
-      setBusy(false)
-    }
-  }, [employeeId, filters])
-
-  useEffect(() => {
-    if (role === 'hr') void loadOverview()
-    else void loadEmployee()
-  }, [loadEmployee, loadOverview, role])
-
-  async function complete(item: Recommendation) {
-    setBusy(true)
-    setError('')
-    try {
-      await request(`/api/employees/${encodeURIComponent(employeeId)}/activities/${encodeURIComponent(item.event_id)}/complete`, role, employeeId, {
-        method: 'POST', body: JSON.stringify({}),
-      })
-      await loadEmployee()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось завершить активность')
-      setBusy(false)
-    }
+  async function refreshDirectory(preferredId?: string) {
+    const [nextMeta, nextPeople] = await Promise.all([
+      api<Meta>('/meta', role, selected),
+      api<Person[]>('/employees', role, selected)
+    ])
+    setMeta(nextMeta)
+    setPeople(nextPeople)
+    if (preferredId && nextPeople.some(p => p.employee_id === preferredId)) setSelected(preferredId)
+    else if (!selected || !nextPeople.some(p => p.employee_id === selected))
+      setSelected((nextPeople.find(p => p.employee_id === 'E0028') || nextPeople[0])?.employee_id || '')
   }
 
-  return (
-    <div className="app-shell">
+  useEffect(() => {
+    refreshDirectory(selected).catch(err => setError(err.message))
+    // Refresh on role changes so an employee never keeps the HR directory.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role])
+
+  useEffect(() => {
+    if (!selected || view !== 'profile') return
+    let active = true
+    setError('')
+    setLoadingProfile(true)
+    setLoadingRecommendations(true)
+    setRecommendations(null)
+    Promise.all([
+      api<Detail>(`/employees/${selected}`, role, selected),
+      api<Progress>(`/employees/${selected}/progress`, role, selected)
+    ]).then(([nextDetail, nextProgress]) => {
+      if (active) { setDetail(nextDetail); setProgress(nextProgress) }
+    }).catch(err => { if (active) setError(err.message) })
+      .finally(() => { if (active) setLoadingProfile(false) })
+    api<RecommendationResponse>(`/employees/${selected}/recommendations`, role, selected)
+      .then(data => { if (active) setRecommendations(data) })
+      .catch(err => { if (active) setError(err.message) })
+      .finally(() => { if (active) setLoadingRecommendations(false) })
+    return () => { active = false }
+  }, [selected, role, view])
+
+  useEffect(() => {
+    if (view !== 'hr' || role !== 'hr') return
+    const params = new URLSearchParams()
+    Object.entries(hrFilters).forEach(([key, value]) => { if (value) params.set(key, value) })
+    api<HrData>(`/hr/overview?${params.toString()}`, role, selected)
+      .then(setHr).catch(err => setError(err.message))
+  }, [view, role, selected, hrFilters])
+
+  async function complete(eventId: string) {
+    if (!selected) return
+    setBusyEvent(eventId)
+    setError('')
+    try {
+      await api(`/employees/${selected}/activities/${eventId}/complete`, role, selected, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+      })
+      setNotice('Демо-завершение записано. Модельный прогресс обновлён.')
+      const [nextDetail, nextProgress, nextRecommendations] = await Promise.all([
+        api<Detail>(`/employees/${selected}`, role, selected),
+        api<Progress>(`/employees/${selected}/progress`, role, selected),
+        api<RecommendationResponse>(`/employees/${selected}/recommendations`, role, selected)
+      ])
+      setDetail(nextDetail); setProgress(nextProgress); setRecommendations(nextRecommendations)
+    } catch (err) { setError((err as Error).message) }
+    finally { setBusyEvent(null) }
+  }
+
+  async function upload(commit: boolean) {
+    setImportBusy(true); setError(''); setImportResult(null)
+    try {
+      const form = new FormData()
+      if (employeeFile) form.append('employees_file', employeeFile)
+      if (historyFile) form.append('history_file', historyFile)
+      if (commit) form.append('label', importLabel)
+      const result = await api<typeof importResult>(`/import/${commit ? 'commit' : 'preview'}`, 'hr', selected, { method: 'POST', body: form })
+      setImportResult(result)
+      if (commit && result?.batch_id) {
+        setNotice(result.already_imported ? 'Набор уже был загружен.' : 'Проверочный набор успешно загружен.')
+        const imported = employeeFile ? await api<Person[]>(`/employees?batch_id=${result.batch_id}`, 'hr', selected) : []
+        const preferred = imported[0]?.employee_id || selected
+        await refreshDirectory(preferred)
+      }
+    } catch (err) { setError((err as Error).message) }
+    finally { setImportBusy(false) }
+  }
+
+  async function deleteBatch(batchId: string) {
+    if (!window.confirm('Удалить этот проверочный набор?')) return
+    try {
+      await api(`/import/${batchId}`, 'hr', selected, { method: 'DELETE' })
+      setNotice('Проверочный набор удалён.')
+      await refreshDirectory()
+    } catch (err) { setError((err as Error).message) }
+  }
+
+  function openEmployee(id: string) {
+    setSelected(id); setView('profile'); setNotice('')
+  }
+
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <Logo />
+      <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav className="navigation" aria-label="Разделы">
+        <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}><span>◇</span> Моя траектория</button>
+        {role === 'hr' && <button className={view === 'hr' ? 'active' : ''} onClick={() => setView('hr')}><span>▥</span> Аналитика HR</button>}
+        {role === 'hr' && <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}><span>↥</span> Импорт данных</button>}
+      </nav>
+      <div className="sidebar-bottom">
+        <div className="snapshot"><span className="status-dot" /> Срез данных: {meta?.as_of_date || '—'}</div>
+        <div className="mode-card"><div className="mode-icon">◈</div><div><strong>Демо-режим</strong><p>Профили и события синтетические</p></div></div>
+      </div>
+    </aside>
+
+    <main className="main-area">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">CQ</span><div><strong>Career Quest</strong><small>Следующий шаг, основанный на данных</small></div></div>
-        <div className="role-switch" aria-label="Демо-роль">
-          <button className={role === 'employee' ? 'active' : ''} onClick={() => setRole('employee')}>Сотрудник</button>
-          <button className={role === 'hr' ? 'active' : ''} onClick={() => setRole('hr')}>HR</button>
+        <div className="topbar-breadcrumb">CAREER QUEST <span>/</span> {view === 'profile' ? 'Траектория' : view === 'hr' ? 'Аналитика HR' : 'Импорт'}</div>
+        <div className="topbar-actions">
+          <div className="role-toggle" aria-label="Роль демо"><button className={role === 'employee' ? 'chosen' : ''} onClick={() => { setRole('employee'); setView('profile') }}>Сотрудник</button><button className={role === 'hr' ? 'chosen' : ''} onClick={() => setRole('hr')}>HR</button></div>
+          <div className="avatar">{role === 'hr' ? 'HR' : detail?.profile.full_name?.split(' ').map(x => x[0]).slice(0, 2).join('') || 'CQ'}</div>
         </div>
       </header>
 
-      <main>
-        <section className="control-bar">
-          {role === 'hr' ? (
-            <label>Профиль для просмотра
-              <select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>
-                {employees.map((person) => <option key={person.employee_id} value={person.employee_id}>{person.full_name} · {person.grade}</option>)}
-              </select>
-            </label>
-          ) : (
-            <form onSubmit={(event) => { event.preventDefault(); void loadEmployee() }}>
-              <label>Ваш демо-ID <input value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} /></label>
-              <button className="secondary" type="submit">Открыть</button>
-            </form>
-          )}
-          <StatusPill tone={busy ? 'warn' : 'good'}>{busy ? 'Обновление…' : 'Данные актуальны'}</StatusPill>
-        </section>
+      <div className="content">
+        {error && <div className="alert error"><span>!</span>{error}<button onClick={() => setError('')}>×</button></div>}
+        {notice && <div className="alert success"><span>✓</span>{notice}<button onClick={() => setNotice('')}>×</button></div>}
 
-        {error && <div className="error" role="alert"><strong>Не удалось выполнить запрос.</strong> {error}</div>}
-        {role === 'employee' ? (
-          <EmployeeView profile={profile} progress={progress} recommendations={recommendations} busy={busy} onComplete={complete} />
-        ) : (
-          <HrView overview={overview} filters={filters} setFilters={setFilters} onApply={loadOverview} onOpenEmployee={(id) => { setEmployeeId(id); setRole('employee') }} employeeId={employeeId} />
-        )}
-      </main>
-      <footer>Демо-режим · персональные данные защищены серверными проверками доступа</footer>
-    </div>
-  )
-}
+        {view === 'profile' && <>
+          <div className="page-heading"><div><div className="eyebrow">ПЕРСОНАЛЬНАЯ ТРАЕКТОРИЯ</div><h1>Ваш следующий шаг — яснее</h1><p>Навыки, карьерная цель и действия, которые реально приближают к ней.</p></div><div className="person-picker"><label htmlFor="employee">Профиль для демонстрации</label><select id="employee" value={selected} onChange={e => setSelected(e.target.value)}>{people.map(person => <option key={person.employee_id} value={person.employee_id}>{person.full_name} · {person.employee_id}</option>)}</select></div></div>
+          {loadingProfile && !detail ? <div className="loading-card">Загружаем профиль...</div> : detail && progress ? <>
+            <section className="hero-grid">
+              <div className="profile-card panel"><div className="profile-top"><div className="large-avatar">{detail.profile.full_name.split(' ').map(x => x[0]).slice(0, 2).join('')}</div><div><span className="mini-label">ПРОФИЛЬ СОТРУДНИКА</span><h2>{detail.profile.full_name}</h2><p>{detail.profile.department}</p></div></div><div className="profile-facts"><div><span>Роль</span><strong>{detail.profile.role}</strong></div><div><span>Грейд</span><strong>{detail.profile.grade}</strong></div><div><span>Стаж</span><strong>{detail.profile.tenure_months} мес.</strong></div><div><span>Формат</span><strong>{detail.profile.work_format}</strong></div></div></div>
+              <div className="trajectory-card panel"><div className="section-kicker">КАРЬЕРНАЯ КАРТА</div><h2>От текущей роли к следующей вехе</h2><div className="trajectory"><div className="trajectory-node current"><small>СЕЙЧАС</small><strong>{detail.profile.grade}</strong><span>{detail.profile.role}</span></div><div className="trajectory-line"><span>→</span></div><div className="trajectory-node future"><small>{progress.mode === 'maintain' ? 'РАЗВИТИЕ' : 'СЛЕДУЮЩАЯ ВЕХА'}</small><strong>{progress.target?.grade || '—'}</strong><span>{progress.target?.role || 'Цель не задана'}</span></div></div>{progress.long_term_goal && targetName(progress.long_term_goal) !== targetName(progress.milestone) && <p className="long-goal">Долгосрочная цель: <strong>{targetName(progress.long_term_goal)}</strong></p>}</div>
+              <div className="progress-card panel"><div className="section-kicker">ГОТОВНОСТЬ ПО НАВЫКАМ</div><Ring value={progress.coverage_pct} /><p>Покрытие требований к профилю <strong>{targetName(progress.target)}</strong></p><small>Это расчёт навыков, а не решение о повышении.</small></div>
+            </section>
 
-function EmployeeView({ profile, progress, recommendations, busy, onComplete }: {
-  profile: ProfileResponse | null
-  progress: Progress | null
-  recommendations: RecommendationsResponse | null
-  busy: boolean
-  onComplete: (item: Recommendation) => Promise<void>
-}) {
-  if (!profile || !progress || !recommendations) return <section className="empty">Выберите корректный ID сотрудника.</section>
-  return <>
-    <section className="hero-card">
-      <div>
-        <span className="eyebrow">Личная траектория</span>
-        <h1>{profile.profile.full_name}</h1>
-        <p>{profile.profile.role} · {profile.profile.grade} · стаж {profile.profile.tenure_months} мес.</p>
+            <section className="recommend-section"><div className="section-heading"><div><div className="eyebrow">ПОДОБРАНО ДЛЯ ВАС</div><h2>Рекомендуемые шаги</h2><p>Каждый шаг проверен на доступность и связан с вашей целью.</p></div><div className="source-pill">{loadingRecommendations ? 'Подбираем…' : recommendations?.provider === 'fallback' ? 'Прозрачный алгоритм' : recommendations?.provider === 'openai' ? 'AI · OpenAI' : recommendations?.provider === 'nvidia' ? 'AI · NVIDIA' : 'Анализ данных'}</div></div>
+              {loadingRecommendations ? <div className="recommend-grid"><div className="skeleton-card" /><div className="skeleton-card" /><div className="skeleton-card" /></div> : recommendations?.items.length ? <div className="recommend-grid">{recommendations.items.map((item, index) => <article className="recommend-card panel" key={item.event_id}><div className="card-top"><div className="rank">0{index + 1}</div><span className="event-type">{formatLabel[item.format] || item.format}</span></div><h3>{item.title}</h3><p className="event-description">{item.description}</p><div className="event-meta"><span>◷ {item.duration_hours} ч</span><span>{item.next_session ? `▣ ${item.next_session}` : '↗ В своём темпе'}</span></div><div className="impact-list">{item.impacts.filter(impact => impact.gain > 0).slice(0, 3).map(impact => <div key={impact.skill_id}><span>{impact.name}{impact.critical && <em>критично</em>}</span><strong>{impact.before} → {impact.after}</strong></div>)}</div><div className="why"><span>ПОЧЕМУ ЭТОТ ШАГ</span>{item.reasons.map(reason => <p key={reason.code}><b>✓</b>{reason.text}</p>)}</div><button className="primary-button" disabled={busyEvent !== null} onClick={() => complete(item.event_id)}>{busyEvent === item.event_id ? 'Обновляем…' : 'Смоделировать выполнение'} <span>↗</span></button></article>)}</div> : <EmptyState title="Подходящих шагов пока нет" text={`Система не подбирает недоступные активности. ${Object.entries(recommendations?.excluded || {}).filter(([key]) => key !== 'mandatory').slice(0, 3).map(([key, count]) => `${exclusionLabel[key] || key}: ${count}`).join('; ')}`} />}</section>
+
+            <section className="lower-grid"><div className="panel skill-panel"><div className="section-heading compact"><div><div className="eyebrow">КАРТА КОМПЕТЕНЦИЙ</div><h2>Путь к целевому профилю</h2></div><span className="muted">Оценка от {detail.profile.last_review_date}</span></div><div className="skill-list">{progress.gaps.map(skill => <div className="skill-row" key={skill.skill_id}><div className="skill-name"><strong>{skill.name}</strong>{skill.critical && <span>Критичный</span>}</div><div className="skill-track"><div style={{ width: `${Math.min(100, skill.modelled / Math.max(skill.required, 1) * 100)}%` }} /></div><div className="skill-values"><strong>{skill.modelled}/{skill.required}</strong><small>{skill.gap ? `−${skill.gap} до цели` : 'Достигнуто'}</small></div></div>)}</div><p className="footnote">Подтверждённый уровень — последняя оценка; модельный включает однозначно датированные завершения. {progress.uncertain_record_ids.length > 0 && `Неоднозначных записей self-paced: ${progress.uncertain_record_ids.length}.`}</p></div>
+              <div className="right-stack"><div className="panel history-panel"><div className="eyebrow">АКТИВНОСТЬ</div><h2>История участия</h2>{detail.history.length ? <div className="history-list">{detail.history.slice(0, 6).map((row, index) => <div key={`${row.event_id}-${row.date}-${index}`} className="history-row"><div className="history-icon">{row.status === 'completed' ? '✓' : '·'}</div><div><strong>{row.event_title}</strong><span>{row.date}</span></div><span className={`history-status ${row.status}`}>{statusLabel[row.status] || row.status}</span></div>)}</div> : <p className="muted">Записей пока нет.</p>}</div><div className="panel mandatory-panel"><div className="eyebrow">ОТДЕЛЬНО ОТ РЕКОМЕНДАЦИЙ</div><h2>Обязательные активности</h2>{detail.mandatory.map(item => <div className="mandatory-row" key={item.event_id}><span>{item.title}</span><small>{statusLabel[item.status] || item.status}</small></div>)}</div></div></section>
+          </> : !loadingProfile && <EmptyState title="Профиль не найден" text="Выберите другого сотрудника или загрузите проверочный набор." />}
+        </>}
+
+        {view === 'hr' && role === 'hr' && <><div className="page-heading"><div><div className="eyebrow">ОБЗОР РАЗВИТИЯ</div><h1>Аналитика компетенций</h1><p>Где есть разрывы, как идут активности и кому пока нечего предложить.</p></div></div><div className="filter-bar"><select value={hrFilters.role} onChange={e => setHrFilters({ ...hrFilters, role: e.target.value })}><option value="">Все роли</option>{hr?.filters.roles.map(x => <option key={x}>{x}</option>)}</select><select value={hrFilters.grade} onChange={e => setHrFilters({ ...hrFilters, grade: e.target.value })}><option value="">Все грейды</option>{hr?.filters.grades.map(x => <option key={x}>{x}</option>)}</select><select value={hrFilters.department} onChange={e => setHrFilters({ ...hrFilters, department: e.target.value })}><option value="">Все подразделения</option>{hr?.filters.departments.map(x => <option key={x}>{x}</option>)}</select></div>{hr ? <><div className="metrics-grid"><div className="metric panel"><span>СОТРУДНИКИ</span><strong>{hr.employee_count}</strong><small>в выбранном срезе</small></div><div className="metric panel"><span>БЕЗ СЛЕДУЮЩЕГО ШАГА</span><strong>{hr.without_step_count}</strong><small>требуют внимания HR</small></div><div className="metric panel"><span>НАВЫКИ С РАЗРЫВОМ</span><strong>{hr.gaps.length}</strong><small>разных компетенций</small></div></div><div className="hr-grid"><div className="panel hr-panel"><div className="eyebrow">КАРТА РАЗРЫВОВ</div><h2>Чаще всего требуют развития</h2>{hr.gaps.slice(0, 12).map(item => <div className="gap-row" key={item.skill_id}><div><strong>{item.name}</strong><span>{item.employee_count} из {item.denominator}</span></div><div className="gap-bar"><i style={{ width: `${item.share_pct}%` }} /></div><b>{item.share_pct}%</b></div>)}</div><div className="panel hr-panel"><div className="eyebrow">НУЖЕН НОВЫЙ ВАРИАНТ</div><h2>Пока без рекомендации</h2>{hr.without_step.length ? hr.without_step.slice(0, 12).map(item => <button className="person-row" key={item.employee_id} onClick={() => openEmployee(item.employee_id)}><span className="person-initials">{item.full_name.split(' ').map(x => x[0]).slice(0, 2).join('')}</span><span><strong>{item.full_name}</strong><small>{item.role} · {item.grade}</small></span><b>↗</b></button>) : <EmptyState title="Все охвачены" text="Для каждого сотрудника найден хотя бы один доступный шаг." />}</div></div><div className="panel hr-panel participation"><div className="eyebrow">УЧАСТИЕ ПО АКТИВНОСТЯМ</div><h2>Как проходят программы</h2><div className="table-wrap"><table><thead><tr><th>Активность</th><th>Участий</th><th>Завершено</th><th>Пропуски</th><th>Отказы</th><th>Доля завершения</th></tr></thead><tbody>{hr.participation.map(item => <tr key={item.event_id}><td>{item.title}</td><td>{item.total}</td><td>{item.completed}</td><td>{item.no_show}</td><td>{item.declined}</td><td><span className="table-percent">{item.completion_pct}%</span></td></tr>)}</tbody></table></div><p className="footnote">Доля завершения = завершённые записи / все записи участия в выбранном срезе. Это не индивидуальный рейтинг.</p></div></> : <div className="loading-card">Считаем агрегаты…</div>}</>}
+
+        {view === 'import' && role === 'hr' && <><div className="page-heading"><div><div className="eyebrow">ПРОВЕРОЧНЫЕ ДАННЫЕ</div><h1>Импорт профилей и истории</h1><p>Добавьте новые профили жюри без изменения исходного набора.</p></div></div><div className="import-grid"><div className="panel import-panel"><h2>Новый набор</h2><p>Можно загрузить один JSON-профиль, объект с `employees[]` или массив. История — CSV той же схемы, что в стартовом наборе.</p><label className="field-label">Название набора<input value={importLabel} onChange={e => setImportLabel(e.target.value)} maxLength={120} /></label><label className="upload-box"><span>01</span><strong>{employeeFile?.name || 'Выбрать employees.json'}</strong><small>JSON · до 3 МБ</small><input type="file" accept=".json,application/json" onChange={e => setEmployeeFile(e.target.files?.[0] || null)} /></label><label className="upload-box"><span>02</span><strong>{historyFile?.name || 'Выбрать activity_history.csv'}</strong><small>CSV · до 3 МБ</small><input type="file" accept=".csv,text/csv" onChange={e => setHistoryFile(e.target.files?.[0] || null)} /></label><div className="import-actions"><button className="secondary-button" disabled={importBusy || (!employeeFile && !historyFile)} onClick={() => upload(false)}>Проверить файлы</button><button className="primary-button" disabled={importBusy || (!employeeFile && !historyFile) || importResult?.valid === false} onClick={() => upload(true)}>{importBusy ? 'Обрабатываем…' : 'Загрузить набор'} ↗</button></div>{importResult && <div className={`import-result ${importResult.errors?.length ? 'bad' : 'good'}`}>{importResult.errors?.length ? <><strong>Найдены ошибки</strong>{importResult.errors.map((item, index) => <p key={index}>{item}</p>)}</> : <><strong>{importResult.batch_id ? 'Набор загружен' : 'Проверка пройдена'}</strong><p>Сотрудников: {importResult.employee_count ?? '—'} · записей истории: {importResult.activity_count ?? '—'}</p></>}</div>}</div><div className="panel batches-panel"><div className="eyebrow">ХРАНЕНИЕ</div><h2>Загруженные наборы</h2>{meta?.batches.map(batch => <div className="batch-row" key={batch.id}><div className="batch-symbol">▣</div><div><strong>{batch.label}</strong><small>{batch.employee_count} профилей · {batch.activity_count} записей</small></div>{batch.id !== 'base' && <button onClick={() => deleteBatch(batch.id)}>Удалить</button>}</div>)}<p className="footnote">Повторная загрузка того же набора не создаёт дубликаты. Исходные файлы не перезаписываются.</p></div></div></>}
       </div>
-      <div className="progress-ring" style={{ '--value': `${progress.coverage_pct * 3.6}deg` } as React.CSSProperties}>
-        <div><strong>{progress.coverage_pct}%</strong><span>готовность</span></div>
-      </div>
-      <div className="target-box">
-        <small>Цель</small>
-        {progress.target ? <><strong>{progress.target.grade}</strong><span>{progress.target.role}</span></> : <strong>Траектория не определена</strong>}
-        <small>на {progress.as_of_date}</small>
-      </div>
-    </section>
-
-    <div className="section-heading"><div><span className="eyebrow">Персональный маршрут</span><h2>Следующие шаги</h2></div><StatusPill>{recommendations.provider === 'fallback' ? 'Надёжный fallback' : recommendations.provider}</StatusPill></div>
-    {recommendations.items.length ? <div className="recommendation-grid">
-      {recommendations.items.map((item, index) => <article className="recommendation" key={item.event_id}>
-        <div className="recommendation-top"><span className="rank">0{index + 1}</span><StatusPill tone={index === 0 ? 'good' : 'neutral'}>{item.format}</StatusPill></div>
-        <h3>{item.title}</h3><p>{item.description}</p>
-        <div className="meta-row"><span>{item.duration_hours} ч</span><span>{item.type}</span><span>score {item.score}</span></div>
-        <ul className="impact-list">{item.impacts.filter((impact) => impact.gain > 0).slice(0, 3).map((impact) => <li key={impact.skill_id}><span>{impact.name}{impact.critical && ' ★'}</span><strong>{impact.before} → {impact.after}</strong></li>)}</ul>
-        <p className="explanation">{item.explanation}</p>
-        <button disabled={busy} onClick={() => void onComplete(item)}>Отметить выполненной</button>
-      </article>)}
-    </div> : <section className="empty"><h3>Подходящих активностей пока нет</h3><p>Все доступные шаги завершены либо не меняют навыки текущей траектории.</p></section>}
-
-    <div className="two-column">
-      <section className="panel"><div className="section-heading"><h2>Разрывы по навыкам</h2><span>{progress.gaps.filter((gap) => gap.gap > 0).length} активных</span></div>
-        <div className="gap-list">{progress.gaps.map((gap) => <div className="gap-row" key={gap.skill_id}><div><strong>{gap.name}{gap.critical && ' ★'}</strong><small>подтверждено {gap.confirmed} · модель {gap.modelled} · цель {gap.required}</small></div><div className="mini-bar"><i style={{ width: `${Math.min(100, gap.modelled / gap.required * 100)}%` }} /></div><b>{gap.gap ? `−${gap.gap}` : '✓'}</b></div>)}</div>
-      </section>
-      <section className="panel"><div className="section-heading"><h2>История</h2><span>последние события</span></div>
-        <div className="history-list">{profile.history.slice(0, 8).map((item, index) => <div key={`${item.event_id}-${item.date}-${index}`}><i className={`dot dot-${item.status}`} /><span><strong>{item.event_title}</strong><small>{item.date} · {item.status}</small></span></div>)}</div>
-        {profile.mandatory.length > 0 && <><div className="section-heading subheading"><h2>Обязательные активности</h2></div><div className="history-list">{profile.mandatory.map((item) => <div key={item.event_id}><i className={`dot dot-${item.status}`} /><span><strong>{item.title}</strong><small>{item.status}</small></span></div>)}</div></>}
-      </section>
-    </div>
-  </>
+    </main>
+  </div>
 }
-
-function HrView({ overview, filters, setFilters, onApply, onOpenEmployee, employeeId }: {
-  overview: HrOverview | null
-  filters: { role: string; grade: string; department: string }
-  setFilters: (value: { role: string; grade: string; department: string }) => void
-  onApply: () => Promise<void>
-  onOpenEmployee: (id: string) => void
-  employeeId: string
-}) {
-  if (!overview) return <section className="empty">HR-данные загружаются…</section>
-  return <>
-    <section className="filter-panel">
-      <label>Роль<select value={filters.role} onChange={(event) => setFilters({ ...filters, role: event.target.value })}><option value="">Все</option>{overview.filters.roles.map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>Грейд<select value={filters.grade} onChange={(event) => setFilters({ ...filters, grade: event.target.value })}><option value="">Все</option>{overview.filters.grades.map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>Подразделение<select value={filters.department} onChange={(event) => setFilters({ ...filters, department: event.target.value })}><option value="">Все</option>{overview.filters.departments.map((item) => <option key={item}>{item}</option>)}</select></label>
-      <button onClick={() => void onApply()}>Применить</button>
-    </section>
-    <div className="metric-grid"><article><span>Сотрудников</span><strong>{overview.employee_count}</strong></article><article><span>Без следующего шага</span><strong>{overview.without_step_count}</strong></article><article><span>Доля без шага</span><strong>{overview.employee_count ? Math.round(overview.without_step_count / overview.employee_count * 100) : 0}%</strong></article></div>
-    <div className="two-column">
-      <section className="panel"><div className="section-heading"><h2>Частые дефициты</h2><span>по выбранной группе</span></div><div className="gap-list">{overview.gaps.slice(0, 12).map((gap) => <div className="gap-row" key={gap.skill_id}><div><strong>{gap.name}</strong><small>{gap.employee_count} из {gap.denominator} сотрудников</small></div><div className="mini-bar"><i style={{ width: `${gap.share_pct}%` }} /></div><b>{gap.share_pct}%</b></div>)}</div></section>
-      <section className="panel"><div className="section-heading"><h2>Без рекомендации</h2><span>{overview.without_step_count}</span></div>{overview.without_step.length ? <div className="people-list">{overview.without_step.map((person) => <button key={person.employee_id} onClick={() => onOpenEmployee(person.employee_id)}><span><strong>{person.full_name}</strong><small>{person.role} · {person.grade}</small></span><b>Открыть →</b></button>)}</div> : <div className="empty compact">У всех есть доступный шаг.</div>}</section>
-    </div>
-    <section className="panel"><div className="section-heading"><h2>Участие по активностям</h2><span>история + завершения в приложении</span></div><div className="table-wrap"><table><thead><tr><th>Активность</th><th>Всего</th><th>Завершено</th><th>Пропуски</th><th>Отказы</th><th>Доля</th></tr></thead><tbody>{overview.participation.slice(0, 15).map((item) => <tr key={item.event_id}><td>{item.title}</td><td>{item.total}</td><td>{item.completed}</td><td>{item.no_show}</td><td>{item.dropped + item.declined + item.overdue}</td><td><strong>{item.completion_pct}%</strong></td></tr>)}</tbody></table></div></section>
-    <ImportPanel employeeId={employeeId} onImported={onApply} />
-  </>
-}
-
-function ImportPanel({ employeeId, onImported }: { employeeId: string; onImported: () => Promise<void> }) {
-  const [employeesFile, setEmployeesFile] = useState<File | null>(null)
-  const [historyFile, setHistoryFile] = useState<File | null>(null)
-  const [result, setResult] = useState<ImportPreview | null>(null)
-  const [error, setError] = useState('')
-
-  async function submit(event: FormEvent, commit: boolean) {
-    event.preventDefault()
-    const body = new FormData()
-    if (employeesFile) body.append('employees_file', employeesFile)
-    if (historyFile) body.append('history_file', historyFile)
-    if (commit) body.append('label', 'Проверочный набор')
-    setError('')
-    try {
-      const response = await request<ImportPreview>(`/api/import/${commit ? 'commit' : 'preview'}`, 'hr', employeeId, { method: 'POST', body })
-      setResult(response)
-      if (commit) await onImported()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Ошибка импорта')
-    }
-  }
-
-  return <section className="panel import-panel"><div className="section-heading"><div><span className="eyebrow">Контроль данных</span><h2>Проверочный импорт</h2></div></div><form onSubmit={(event) => void submit(event, false)}><label>Профили JSON<input type="file" accept=".json,application/json" onChange={(event) => setEmployeesFile(event.target.files?.[0] ?? null)} /></label><label>История CSV<input type="file" accept=".csv,text/csv" onChange={(event) => setHistoryFile(event.target.files?.[0] ?? null)} /></label><button className="secondary" type="submit">Проверить</button><button type="button" disabled={!result?.valid} onClick={(event) => void submit(event as unknown as FormEvent, true)}>Импортировать</button></form>{error && <div className="error">{error}</div>}{result && <div className={result.valid ? 'import-result valid' : 'import-result invalid'}><strong>{result.valid ? 'Набор валиден' : 'Найдены ошибки'}</strong><span>Профили: {result.employee_count} · история: {result.activity_count}</span>{result.errors?.map((item) => <small key={item}>{item}</small>)}</div>}</section>
-}
-
-export default App
