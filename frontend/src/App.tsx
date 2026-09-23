@@ -46,7 +46,7 @@ function targetName(target: { role: string; grade: string } | null) {
 }
 
 function Logo() {
-  return <div className="brand"><div className="brand-mark"><span>✦</span></div><div><strong>Career Quest</strong><small>платформа развития</small></div></div>
+  return <div className="brand"><div className="brand-mark"><span>Q</span></div><div><strong>Career Quest</strong><small>ваша траектория роста</small></div></div>
 }
 
 function EmptyState({ title, text }: { title: string; text: string }) {
@@ -54,7 +54,7 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 }
 
 function Ring({ value }: { value: number }) {
-  return <div className="ring" style={{ background: `conic-gradient(#69d3ae ${value}%, #293b50 ${value}% 100%)` }}><div><strong>{value}%</strong><span>покрытие цели</span></div></div>
+  return <div className="ring" style={{ background: `conic-gradient(#28ad6f ${value}%, #e7eee9 ${value}% 100%)` }}><div><strong>{value}%</strong><span>покрытие цели</span></div></div>
 }
 
 export default function App() {
@@ -179,14 +179,21 @@ export default function App() {
     setSelected(id); setView('profile'); setNotice('')
   }
 
+  function scrollToSection(selector: string) {
+    document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return <div className="app-shell">
     <aside className="sidebar">
       <Logo />
       <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
       <nav className="navigation" aria-label="Разделы">
-        <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}><span>◇</span> Моя траектория</button>
+        <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}><span>⌂</span> Моя траектория</button>
+        {role === 'employee' && <button className="mobile-nav-item" onClick={() => scrollToSection('.recommend-section')}><span>✦</span> Развитие</button>}
+        {role === 'employee' && <button className="mobile-nav-item" onClick={() => scrollToSection('.skill-panel')}><span>▤</span> Навыки</button>}
+        {role === 'employee' && <button className="mobile-nav-item" onClick={() => scrollToSection('.profile-card')}><span>○</span> Профиль</button>}
         {role === 'hr' && <button className={view === 'hr' ? 'active' : ''} onClick={() => setView('hr')}><span>▥</span> Аналитика HR</button>}
-        {role === 'hr' && <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}><span>↥</span> Импорт данных</button>}
+        {role === 'hr' && <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}><span>⇧</span> Импорт данных</button>}
       </nav>
       <div className="sidebar-bottom">
         <div className="snapshot"><span className="status-dot" /> Срез данных: {meta?.as_of_date || '—'}</div>
@@ -196,9 +203,10 @@ export default function App() {
 
     <main className="main-area">
       <header className="topbar">
-        <div className="topbar-breadcrumb">CAREER QUEST <span>/</span> {view === 'profile' ? 'Траектория' : view === 'hr' ? 'Аналитика HR' : 'Импорт'}</div>
+        <div className="topbar-breadcrumb"><b>{view === 'profile' ? 'Моя траектория' : view === 'hr' ? 'Аналитика HR' : 'Импорт данных'}</b><small>Career Quest</small></div>
         <div className="topbar-actions">
           <div className="role-toggle" aria-label="Роль демо"><button className={role === 'employee' ? 'chosen' : ''} onClick={() => { setRole('employee'); setView('profile') }}>Сотрудник</button><button className={role === 'hr' ? 'chosen' : ''} onClick={() => setRole('hr')}>HR</button></div>
+          <button className="notification-button" aria-label="Уведомления"><span>●</span>◎</button>
           <div className="avatar">{role === 'hr' ? 'HR' : detail?.profile.full_name?.split(' ').map(x => x[0]).slice(0, 2).join('') || 'CQ'}</div>
         </div>
       </header>
@@ -208,7 +216,7 @@ export default function App() {
         {notice && <div className="alert success"><span>✓</span>{notice}<button onClick={() => setNotice('')}>×</button></div>}
 
         {view === 'profile' && <>
-          <div className="page-heading"><div><div className="eyebrow">ПЕРСОНАЛЬНАЯ ТРАЕКТОРИЯ</div><h1>Ваш следующий шаг — яснее</h1><p>Навыки, карьерная цель и действия, которые реально приближают к ней.</p></div><div className="person-picker"><label htmlFor="employee">Профиль для демонстрации</label><select id="employee" value={selected} onChange={e => setSelected(e.target.value)}>{people.map(person => <option key={person.employee_id} value={person.employee_id}>{person.full_name} · {person.employee_id}</option>)}</select></div></div>
+          <div className="page-heading profile-heading"><div><div className="eyebrow">ПЕРСОНАЛЬНАЯ ТРАЕКТОРИЯ</div><h1>Ваш следующий шаг — яснее</h1><p>Навыки, карьерная цель и действия, которые реально приближают к ней.</p></div><div className="heading-visual" aria-hidden="true"><i /><i /><i /><span>↗</span></div><div className="person-picker"><label htmlFor="employee">Профиль для демонстрации</label><select id="employee" value={selected} onChange={e => setSelected(e.target.value)}>{people.map(person => <option key={person.employee_id} value={person.employee_id}>{person.full_name} · {person.employee_id}</option>)}</select></div></div>
           {loadingProfile && !detail ? <div className="loading-card">Загружаем профиль...</div> : detail && progress ? <>
             <section className="hero-grid">
               <div className="profile-card panel"><div className="profile-top"><div className="large-avatar">{detail.profile.full_name.split(' ').map(x => x[0]).slice(0, 2).join('')}</div><div><span className="mini-label">ПРОФИЛЬ СОТРУДНИКА</span><h2>{detail.profile.full_name}</h2><p>{detail.profile.department}</p></div></div><div className="profile-facts"><div><span>Роль</span><strong>{detail.profile.role}</strong></div><div><span>Грейд</span><strong>{detail.profile.grade}</strong></div><div><span>Стаж</span><strong>{detail.profile.tenure_months} мес.</strong></div><div><span>Формат</span><strong>{detail.profile.work_format}</strong></div></div></div>
