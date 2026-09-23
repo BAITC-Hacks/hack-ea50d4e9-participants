@@ -26,7 +26,12 @@ CHOICE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "event_id": {"type": "string"},
-                    "reason_codes": {"type": "array", "items": {"type": "string", "enum": REASON_CODES}},
+                    "reason_codes": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": REASON_CODES},
+                        "minItems": 3,
+                        "uniqueItems": True,
+                    },
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["event_id", "reason_codes", "evidence_ids"],
@@ -83,7 +88,12 @@ def _validate(response, candidates):
         evidence = choice.get("evidence_ids")
         if event_id not in allowed or event_id in seen:
             raise ValueError("AI chose an unknown or repeated event")
-        if not isinstance(codes, list) or not codes or any(code not in REASON_CODES for code in codes):
+        if (
+            not isinstance(codes, list)
+            or len(codes) < 3
+            or len(codes) != len(set(codes))
+            or any(code not in REASON_CODES for code in codes)
+        ):
             raise ValueError("AI returned unsupported reason codes")
         if not isinstance(evidence, list) or not evidence or any(
             fact not in {f"{event_id}:{code}" for code in REASON_CODES} for fact in evidence
