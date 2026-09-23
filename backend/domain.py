@@ -227,7 +227,7 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
             {
                 "code": "skill_gap",
                 "text": (
-                    f"Закрывает {sum(i['closes_gap'] for i in impacts)} уровня разрыва"
+                    f"Сокращает разрыв на {sum(i['closes_gap'] for i in impacts)} ур."
                     if useful else "Развивает навыки сверх текущих требований"
                 ),
             },
@@ -273,17 +273,9 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
 
 
 def choose_baseline(candidates, count=3):
-    selected = []
-    types = set()
-    for candidate in candidates:
-        if len(selected) >= count:
-            break
-        if candidate["type"] not in types or len(candidates) <= count:
-            selected.append(candidate)
-            types.add(candidate["type"])
-    for candidate in candidates:
-        if len(selected) >= count:
-            break
-        if candidate not in selected:
-            selected.append(candidate)
-    return selected
+    relevant = [
+        candidate for candidate in candidates
+        if candidate["factors"]["weighted_gap_closure"] > 0
+        or candidate["factors"]["long_term_gap_closure"] > 0
+    ]
+    return (relevant or candidates)[:count]

@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import psycopg
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -142,14 +143,16 @@ async def recommendations(
     candidates, exclusions = eligible_candidates(employee, records, completions, catalog, state)
     if not candidates:
         return {"items": [], "provider": "no_candidates", "excluded": exclusions, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
+    relevant = [candidate for candidate in candidates if candidate["factors"]["weighted_gap_closure"] > 0 or candidate["factors"]["long_term_gap_closure"] > 0]
+    rankable = relevant or candidates
     key_data = [employee, records, completions, catalog["version"], catalog["as_of_date"]]
     key = hashlib.sha256(json.dumps(key_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     cached = _recommendation_cache.get(key)
     if cached and cached[0] > time.monotonic():
         return {**cached[1], "cached": True}
-    chosen, provider = await rerank(state, candidates)
+    chosen, provider = await rerank(state, rankable)
     if chosen is None:
-        chosen = [(candidate, [reason["code"] for reason in candidate["reasons"]]) for candidate in choose_baseline(candidates)]
+        chosen = [(candidate, [reason["code"] for reason in candidate["reasons"]]) for candidate in choose_baseline(rankable)]
     items = [
         {**candidate, "selected_reason_codes": codes, "explanation": " · ".join(reason["text"] for reason in candidate["reasons"] if reason["code"] in codes)}
         for candidate, codes in chosen
@@ -183,19 +186,14 @@ def complete_activity(
         candidate = next((item for item in candidates if item["event_id"] == event_id), None)
         if not candidate:
             raise HTTPException(409, "Активность сейчас недоступна или уже завершена")
-        occurrence_id = (
-            (body.occurrence_id or candidate["next_session"] or catalog["as_of_date"])
-            if event_id == REPEATABLE_EVENT else "once"
-        )
+        occurrence_id = f"demo:{catalog['as_of_date']}" if event_id == REPEATABLE_EVENT else "once"
         try:
             conn.execute(
                 "INSERT INTO completions(employee_id,event_id,occurrence_id,completed_on) VALUES (%s,%s,%s,%s)",
                 (employee_id, event_id, occurrence_id, catalog["as_of_date"]),
             )
-        except Exception as exc:
-            if "duplicate key" in str(exc):
-                raise HTTPException(409, "Завершение уже учтено") from exc
-            raise
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(409, "Завершение уже учтено") from exc
         updated = progress(employee, records, database.get_completions(conn, employee_id), catalog)
     _recommendation_cache.clear()
     return {"event_id": event_id, "occurrence_id": occurrence_id, "progress": updated}
@@ -335,6 +333,8 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{path:path}")
     def frontend(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404, "API endpoint not found")
         file_path = FRONTEND_DIST / path
         if path and file_path.is_file() and file_path.resolve().is_relative_to(FRONTEND_DIST.resolve()):
             return FileResponse(file_path)
