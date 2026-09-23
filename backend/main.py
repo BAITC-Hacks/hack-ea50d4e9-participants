@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database
+from analytics import summarize_participation
 from ai_provider import rerank
 from config import DEMO_MODE
 from domain import REPEATABLE_EVENT, choose_baseline, eligible_candidates, progress
@@ -151,10 +152,10 @@ async def recommendations(
         catalog = database.get_catalog(conn)
     state = progress(employee, records, completions, catalog)
     candidates, exclusions = eligible_candidates(employee, records, completions, catalog, state)
-    if not candidates:
-        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
     relevant = [candidate for candidate in candidates if candidate["factors"]["weighted_gap_closure"] > 0 or candidate["factors"]["long_term_gap_closure"] > 0]
-    rankable = relevant or candidates
+    if not relevant:
+        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
+    rankable = relevant
     key_data = [employee, records, completions, catalog["version"], catalog["as_of_date"]]
     key = hashlib.sha256(json.dumps(key_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     cached = _recommendation_cache.get(key)
@@ -318,22 +319,8 @@ def hr_overview(
         for skill_id, count in gap_count.most_common()
     ]
     selected_ids = {employee["employee_id"] for employee in selected}
-    participation = defaultdict(Counter)
-    for record in records:
-        if record["employee_id"] in selected_ids:
-            participation[record["event_id"]][record["status"]] += 1
-    for completion in completions:
-        if completion["employee_id"] in selected_ids:
-            participation[completion["event_id"]]["completed"] += 1
     event_names = {event["event_id"]: event["title"] for event in catalog["events"]}
-    activities = [
-        {"event_id": event_id, "title": event_names.get(event_id, event_id), "total": sum(counts.values()),
-         "completed": counts["completed"], "no_show": counts["no_show"], "dropped": counts["dropped"],
-         "declined": counts["declined"], "overdue": counts["overdue"],
-         "completion_pct": round(100 * counts["completed"] / sum(counts.values()))}
-        for event_id, counts in participation.items()
-    ]
-    activities.sort(key=lambda item: -item["total"])
+    activities = summarize_participation(records, completions, selected_ids, event_names)
     return {"employee_count": len(selected), "gaps": gaps, "without_step": no_step,
             "without_step_count": len(no_step), "participation": activities,
             "filters": {"roles": sorted({e["role"] for e in employees}), "grades": ["Junior", "Middle", "Senior", "Lead"],

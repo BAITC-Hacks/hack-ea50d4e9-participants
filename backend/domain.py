@@ -152,6 +152,7 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
     long_requirements = long_term["required_skills"] if long_term else {}
     as_of = catalog["as_of_date"]
     skill_names = {skill["skill_id"]: skill["name"] for skill in catalog["skills"]}
+    events_by_id = by_id(catalog["events"], "event_id")
     candidates = []
     exclusions = Counter()
     for event in catalog["events"]:
@@ -214,12 +215,28 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
         if not any(item["gain"] > 0 and item["skill_id"] in relevant_skills for item in impacts):
             exclusions["no_gain"] += 1
             continue
+        if useful <= 0 and long_gain <= 0:
+            exclusions["no_goal_gain"] += 1
+            continue
 
         same_type = [r for r in records if r["status"] in ("completed", "dropped", "no_show") and
-                     next((e["type"] for e in catalog["events"] if e["event_id"] == r["event_id"]), None) == event["type"]]
+                     events_by_id.get(r["event_id"], {}).get("type") == event["type"]]
         same_type_completed = sum(r["status"] == "completed" for r in same_type)
         same_event_missed = sum(r["status"] in ("no_show", "dropped") for r in history)
-        history_signal = min(same_type_completed, 3) * 1.5 - min(same_event_missed, 3) * 4
+        developed_skills = {item["skill_id"] for item in event["develops_skills"]}
+        similar_history = [
+            record for record in records
+            if record["event_id"] == event_id or developed_skills.intersection(
+                item["skill_id"] for item in events_by_id.get(record["event_id"], {}).get("develops_skills", [])
+            )
+        ]
+        similar_missed = sum(r["status"] in ("no_show", "dropped") for r in similar_history)
+        similar_declined = sum(r["status"] == "declined" for r in similar_history)
+        history_signal = (
+            min(same_type_completed, 3) * 1.5
+            - min(similar_missed, 3) * 4
+            - min(similar_declined, 3) * 2
+        )
         duration_penalty = min(event["duration_hours"], 20) * 0.3
         score = round(useful * 20 + critical_gain * 8 + long_gain * 4 + history_signal - duration_penalty, 2)
         key_impact = max(
@@ -242,7 +259,9 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
             {
                 "code": "history",
                 "text": (
-                    f"Похожих завершено: {same_type_completed}; пропусков/прерываний этого события: {same_event_missed}"
+                    f"Похожих завершено: {same_type_completed}; "
+                    f"пропусков/прерываний по тем же навыкам: {similar_missed}; "
+                    f"отказов: {similar_declined}"
                 ),
             },
             {
@@ -270,6 +289,8 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
                     "long_term_gap_closure": long_gain,
                     "same_type_completed": same_type_completed,
                     "same_event_missed": same_event_missed,
+                    "similar_missed": similar_missed,
+                    "similar_declined": similar_declined,
                     "duration_penalty": round(duration_penalty, 2),
                 },
                 "impacts": impacts,
@@ -286,4 +307,4 @@ def choose_baseline(candidates, count=3):
         if candidate["factors"]["weighted_gap_closure"] > 0
         or candidate["factors"]["long_term_gap_closure"] > 0
     ]
-    return (relevant or candidates)[:count]
+    return relevant[:count]

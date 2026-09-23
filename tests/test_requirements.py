@@ -17,7 +17,8 @@ except ModuleNotFoundError:
     httpx_stub.AsyncClient = object
     sys.modules["httpx"] = httpx_stub
 
-from ai_provider import _validate  # noqa: E402
+from ai_provider import CHOICE_SCHEMA, _validate  # noqa: E402
+from analytics import summarize_participation  # noqa: E402
 from domain import eligible_candidates, progress  # noqa: E402
 
 
@@ -82,6 +83,54 @@ class DomainRequirementsTests(unittest.TestCase):
         self.assertEqual([], candidates)
         self.assertEqual(1, excluded["no_gain"])
 
+    def test_activity_must_close_a_remaining_goal_gap(self):
+        ready = employee()
+        ready["skills"]["system"] = 4
+        data = catalog([event("SYSTEM", "system")])
+        data["role_profiles"][1]["required_skills"]["public"] = 2
+        self.assertLess(progress(ready, [], [], data)["coverage_pct"], 100)
+        candidates, excluded = eligible_candidates(
+            ready, [], [], data
+        )
+        self.assertEqual([], candidates)
+        self.assertEqual(1, excluded["no_goal_gain"])
+
+    def test_missed_similar_activity_reduces_score(self):
+        course = event("SYSTEM", "system")
+        workshop = event("OTHER_SYSTEM", "system")
+        workshop["type"] = "workshop"
+        unrelated = event("PUBLIC", "public")
+        base, _ = eligible_candidates(employee(), [], [], catalog([course, workshop, unrelated]))
+        base_score = next(item["score"] for item in base if item["event_id"] == "SYSTEM")
+        misses = [
+            {"record_id": f"miss-{i}", "event_id": "OTHER_SYSTEM", "date": "2026-09-01", "status": "no_show"}
+            for i in range(3)
+        ]
+        candidates, _ = eligible_candidates(employee(), misses, [], catalog([course, workshop, unrelated]))
+        chosen = next(item for item in candidates if item["event_id"] == "SYSTEM")
+        self.assertEqual(base_score - 12, chosen["score"])
+        self.assertEqual(3, chosen["factors"]["similar_missed"])
+        self.assertIn("пропусков/прерываний по тем же навыкам: 3", chosen["reasons"][2]["text"])
+
+        unrelated_misses = [
+            {"record_id": "other", "event_id": "PUBLIC", "date": "2026-09-01", "status": "no_show"}
+        ]
+        unaffected, _ = eligible_candidates(employee(), unrelated_misses, [], catalog([course, workshop, unrelated]))
+        self.assertEqual(base_score, next(item["score"] for item in unaffected if item["event_id"] == "SYSTEM"))
+
+    def test_demo_completion_is_counted_in_hr_participation(self):
+        records = [
+            {"employee_id": "E1", "event_id": "SYSTEM", "status": "no_show"},
+            {"employee_id": "E2", "event_id": "SYSTEM", "status": "completed"},
+        ]
+        completions = [{"employee_id": "E1", "event_id": "SYSTEM"}]
+        activities = summarize_participation(records, completions, {"E1"}, {"SYSTEM": "System Design"})
+        self.assertEqual(1, len(activities))
+        self.assertEqual(2, activities[0]["total"])
+        self.assertEqual(1, activities[0]["completed"])
+        self.assertEqual(1, activities[0]["no_show"])
+        self.assertEqual(50, activities[0]["completion_pct"])
+
     def test_explanation_has_current_required_and_expected_levels(self):
         candidates, _ = eligible_candidates(
             employee(), [], [], catalog([event("SYSTEM", "system")])
@@ -104,6 +153,11 @@ class DomainRequirementsTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             _validate(response, candidates)
+
+    def test_openai_schema_leaves_array_constraints_to_validator(self):
+        reason_codes = CHOICE_SCHEMA["properties"]["choices"]["items"]["properties"]["reason_codes"]
+        self.assertNotIn("minItems", reason_codes)
+        self.assertNotIn("uniqueItems", reason_codes)
 
 
 if __name__ == "__main__":
