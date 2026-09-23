@@ -19,7 +19,7 @@ import database
 from analytics import summarize_participation
 from ai_provider import rerank
 from config import DEMO_MODE
-from domain import REPEATABLE_EVENT, choose_baseline, critical_skill_blockers, eligible_candidates, explain_candidate, progress
+from domain import REPEATABLE_EVENT, choose_baseline, critical_skill_blockers, eligible_candidates, explain_candidate, next_step_status, progress
 from ingestion import parse_employees, parse_history, validate_batch
 
 
@@ -307,6 +307,8 @@ def hr_overview(
     gap_count = Counter()
     gap_denominator = Counter()
     no_step = []
+    no_goal = []
+    goal_met = []
     for employee in selected:
         employee_id = employee["employee_id"]
         state = progress(employee, record_map[employee_id], completion_map[employee_id], catalog)
@@ -315,8 +317,15 @@ def hr_overview(
             if gap["gap"]:
                 gap_count[gap["skill_id"]] += 1
         candidates, exclusions = eligible_candidates(employee, record_map[employee_id], completion_map[employee_id], catalog, state)
-        if not candidates:
-            no_step.append({"employee_id": employee_id, "full_name": employee["full_name"], "role": employee["role"], "grade": employee["grade"], "reasons": exclusions})
+        step_status = next_step_status(state, candidates)
+        if step_status != "has_step":
+            summary = {"employee_id": employee_id, "full_name": employee["full_name"], "role": employee["role"], "grade": employee["grade"]}
+            if step_status == "catalog_gap":
+                no_step.append({**summary, "reasons": exclusions})
+            elif step_status == "no_goal":
+                no_goal.append(summary)
+            else:
+                goal_met.append(summary)
     skill_names = {skill["skill_id"]: skill["name"] for skill in catalog["skills"]}
     gaps = [
         {"skill_id": skill_id, "name": skill_names.get(skill_id, skill_id), "employee_count": count,
@@ -327,7 +336,9 @@ def hr_overview(
     event_names = {event["event_id"]: event["title"] for event in catalog["events"]}
     activities = summarize_participation(records, completions, selected_ids, event_names)
     return {"employee_count": len(selected), "gaps": gaps, "without_step": no_step,
-            "without_step_count": len(no_step), "participation": activities,
+            "without_step_count": len(no_step), "without_goal": no_goal,
+            "without_goal_count": len(no_goal), "goal_met": goal_met,
+            "goal_met_count": len(goal_met), "participation": activities,
             "filters": {"roles": sorted({e["role"] for e in employees}), "grades": ["Junior", "Middle", "Senior", "Lead"],
                         "departments": sorted({e["department"] for e in employees})}}
 

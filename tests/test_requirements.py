@@ -17,9 +17,9 @@ except ModuleNotFoundError:
     httpx_stub.AsyncClient = object
     sys.modules["httpx"] = httpx_stub
 
-from ai_provider import CHOICE_SCHEMA, _validate  # noqa: E402
+from ai_provider import CHOICE_SCHEMA, _ai_pool, _request_payload, _validate  # noqa: E402
 from analytics import summarize_participation  # noqa: E402
-from domain import eligible_candidates, progress  # noqa: E402
+from domain import choose_baseline, eligible_candidates, next_step_status, progress  # noqa: E402
 
 
 def catalog(events, profiles=None):
@@ -75,6 +75,7 @@ class DomainRequirementsTests(unittest.TestCase):
         state = progress(employee("Lead"), [], [], catalog([], profiles=lead_profile))
         self.assertIsNone(state["target"])
         self.assertEqual("maintain", state["mode"])
+        self.assertIsNone(state["coverage_pct"])
 
     def test_irrelevant_activity_is_not_a_candidate(self):
         candidates, excluded = eligible_candidates(
@@ -131,6 +132,29 @@ class DomainRequirementsTests(unittest.TestCase):
         self.assertEqual(1, activities[0]["no_show"])
         self.assertEqual(50, activities[0]["completion_pct"])
 
+    def test_demo_completion_informs_next_recommendation_history(self):
+        data = catalog([event("FIRST", "system"), event("SECOND", "system")])
+        finished = {**employee(), "skills": {"system": 3, "public": 0}}
+        without_completion, _ = eligible_candidates(finished, [], [], data)
+        completion = [{"event_id": "FIRST", "occurrence_id": "once", "completed_on": "2026-09-01"}]
+        with_completion, _ = eligible_candidates(employee(), [], completion, data)
+        before = next(item for item in without_completion if item["event_id"] == "SECOND")
+        after = next(item for item in with_completion if item["event_id"] == "SECOND")
+        self.assertEqual(after["score"], before["score"] + 1.5)
+        self.assertEqual(after["factors"]["same_type_completed"], 1)
+        self.assertIn("Активностей такого типа завершено: 1", after["reasons"][2]["text"])
+
+    def test_hr_step_status_separates_missing_goal_from_catalog_gap(self):
+        lead = [{"role": "Engineer", "grade": "Lead", "required_skills": {"system": 5}, "critical_skills": ["system"]}]
+        self.assertEqual("no_goal", next_step_status(progress(employee("Lead"), [], [], catalog([], lead)), []))
+        self.assertEqual("catalog_gap", next_step_status(progress(employee(), [], [], catalog([])), []))
+        ready = employee()
+        ready["skills"]["system"] = 4
+        self.assertEqual("goal_met", next_step_status(progress(ready, [], [], catalog([])), []))
+        data = catalog([event("SYSTEM", "system")])
+        candidates, _ = eligible_candidates(employee(), [], [], data)
+        self.assertEqual("has_step", next_step_status(progress(employee(), [], [], data), candidates))
+
     def test_explanation_has_current_required_and_expected_levels(self):
         candidates, _ = eligible_candidates(
             employee(), [], [], catalog([event("SYSTEM", "system")])
@@ -153,6 +177,33 @@ class DomainRequirementsTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             _validate(response, candidates)
+
+    def test_critical_step_is_first_even_when_local_rank_exceeds_ai_limit(self):
+        critical = event("CRITICAL", "system")
+        critical["format"] = "online"
+        critical["duration_hours"] = 20
+        critical["upcoming_sessions"] = ["2026-10-02"]
+        public = [event(f"PUBLIC_{index}", "public") for index in range(9)]
+        for item in public:
+            item["develops_skills"][0]["gain"] = 2
+        data = catalog(public + [critical])
+        data["role_profiles"][1]["required_skills"]["public"] = 2
+        misses = [
+            {"record_id": f"miss-{index}", "event_id": "CRITICAL", "date": "2026-09-01", "status": "no_show"}
+            for index in range(3)
+        ]
+        candidates, _ = eligible_candidates(employee(), misses, [], data)
+        self.assertGreater(next(index for index, item in enumerate(candidates) if item["event_id"] == "CRITICAL"), 7)
+        self.assertEqual("CRITICAL", choose_baseline(candidates)[0]["event_id"])
+        self.assertIn("CRITICAL", {item["event_id"] for item in _ai_pool(candidates)})
+        self.assertIn("CRITICAL", {item["event_id"] for item in _request_payload(progress(employee(), misses, [], data), candidates)["candidates"]})
+        def choice(event_id):
+            codes = ["target", "skill_gap", "history"]
+            return {"event_id": event_id, "reason_codes": codes, "evidence_ids": [f"{event_id}:{code}" for code in codes]}
+        with self.assertRaisesRegex(ValueError, "critical-gap"):
+            _validate({"choices": [choice("PUBLIC_0"), choice("CRITICAL")]}, candidates)
+        selected = _validate({"choices": [choice("CRITICAL"), choice("PUBLIC_0")]}, candidates)
+        self.assertEqual("CRITICAL", selected[0][0]["event_id"])
 
     def test_openai_schema_leaves_array_constraints_to_validator(self):
         reason_codes = CHOICE_SCHEMA["properties"]["choices"]["items"]["properties"]["reason_codes"]
