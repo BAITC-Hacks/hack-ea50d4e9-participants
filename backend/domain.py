@@ -142,6 +142,91 @@ def _last_session(event, as_of):
     return future[0] if future else None
 
 
+def _event_exclusion_reason(employee, event, records, completions, current, as_of):
+    event_id = event["event_id"]
+    history = [record for record in records if record["event_id"] == event_id]
+    completed = [record for record in history if record["status"] == "completed"] + [
+        completion for completion in completions if completion["event_id"] == event_id
+    ]
+    if event["mandatory"]:
+        return "mandatory"
+    if employee["role"] not in event["target_roles"] or employee["grade"] not in event["target_grades"]:
+        return "audience"
+    if any(current.get(skill_id, 0) < required for skill_id, required in event["prerequisites"].items()):
+        return "prerequisites"
+    if event_id != REPEATABLE_EVENT and completed:
+        return "completed"
+    if any(record["status"] == "in_progress" for record in history):
+        return "in_progress"
+    if event["format"] != "self_paced" and not _last_session(event, as_of):
+        return "no_session"
+    if event_id == REPEATABLE_EVENT and completed:
+        latest = max((record.get("date") or record.get("completed_on")) for record in completed)
+        if (date.fromisoformat(as_of) - date.fromisoformat(latest)).days < 21:
+            return "repeat_cooldown"
+    return None
+
+
+def critical_skill_blockers(employee, records, completions, catalog, state=None):
+    """Explain why a critical gap has no available voluntary activity."""
+    state = state or progress(employee, records, completions, catalog)
+    current = state["modelled_skills"]
+    as_of = catalog["as_of_date"]
+    skill_names = {skill["skill_id"]: skill["name"] for skill in catalog["skills"]}
+    blocked = []
+    for gap in state["gaps"]:
+        if not gap["critical"] or gap["gap"] <= 0:
+            continue
+        events = []
+        has_available_step = False
+        for event in catalog["events"]:
+            impact = next((item for item in event["develops_skills"] if item["skill_id"] == gap["skill_id"]), None)
+            if impact is None:
+                continue
+            before = current.get(gap["skill_id"], 0)
+            after = max(before, min(5, impact["max_level"], before + impact["gain"]))
+            if after <= before:
+                code = "max_level" if impact["max_level"] <= before else "no_gain"
+                explanation = (
+                    f"Предел этой активности — уровень {impact['max_level']}; текущий уровень уже {before}."
+                    if code == "max_level" else "Активность не повышает текущий уровень навыка."
+                )
+            else:
+                code = _event_exclusion_reason(employee, event, records, completions, current, as_of)
+                if code is None:
+                    has_available_step = True
+                    continue
+                explanation = {
+                    "mandatory": "Это обязательная активность, она показана отдельно от рекомендаций.",
+                    "audience": "Активность не подходит для вашей текущей роли или грейда.",
+                    "completed": "Вы уже завершили активность; повторное прохождение не предусмотрено.",
+                    "in_progress": "Активность уже находится в процессе.",
+                    "no_session": "В каталоге пока нет будущей даты сессии.",
+                    "repeat_cooldown": "Повтор станет доступен после паузы в 21 день.",
+                }.get(code)
+                if code == "prerequisites":
+                    missing = [
+                        f"{skill_names.get(skill_id, skill_id)} {current.get(skill_id, 0)}/{required}"
+                        for skill_id, required in event["prerequisites"].items()
+                        if current.get(skill_id, 0) < required
+                    ]
+                    explanation = "Не хватает входных навыков: " + ", ".join(missing) + "."
+            events.append({"event_id": event["event_id"], "title": event["title"], "reason_code": code, "reason": explanation})
+        if not has_available_step:
+            blocked.append({
+                "skill_id": gap["skill_id"],
+                "name": gap["name"],
+                "current": gap["modelled"],
+                "required": gap["required"],
+                "message": (
+                    "В каталоге пока нет активности, развивающей этот навык."
+                    if not events else "Сейчас нет доступной добровольной активности для повышения этого навыка."
+                ),
+                "events": events,
+            })
+    return blocked
+
+
 def eligible_candidates(employee, records, completions, catalog, state=None):
     state = state or progress(employee, records, completions, catalog)
     current = state["modelled_skills"]
@@ -158,26 +243,7 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
     for event in catalog["events"]:
         event_id = event["event_id"]
         history = [r for r in records if r["event_id"] == event_id]
-        completed = [r for r in history if r["status"] == "completed"] + [
-            c for c in completions if c["event_id"] == event_id
-        ]
-        reason = None
-        if event["mandatory"]:
-            reason = "mandatory"
-        elif employee["role"] not in event["target_roles"] or employee["grade"] not in event["target_grades"]:
-            reason = "audience"
-        elif any(current.get(skill_id, 0) < required for skill_id, required in event["prerequisites"].items()):
-            reason = "prerequisites"
-        elif event_id != REPEATABLE_EVENT and completed:
-            reason = "completed"
-        elif any(r["status"] == "in_progress" for r in history):
-            reason = "in_progress"
-        elif event["format"] != "self_paced" and not _last_session(event, as_of):
-            reason = "no_session"
-        elif event_id == REPEATABLE_EVENT and completed:
-            latest = max((r.get("date") or r.get("completed_on")) for r in completed)
-            if (date.fromisoformat(as_of) - date.fromisoformat(latest)).days < 21:
-                reason = "repeat_cooldown"
+        reason = _event_exclusion_reason(employee, event, records, completions, current, as_of)
         if reason:
             exclusions[reason] += 1
             continue
@@ -206,8 +272,10 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
                     "after": after,
                     "gain": actual_gain,
                     "required": requirements.get(skill_id, 0),
+                    "long_term_required": long_requirements.get(skill_id, 0),
                     "gap_before": gap,
                     "closes_gap": closure,
+                    "long_term_closes_gap": long_closure,
                     "critical": skill_id in critical,
                 }
             )
@@ -241,18 +309,24 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
         score = round(useful * 20 + critical_gain * 8 + long_gain * 4 + history_signal - duration_penalty, 2)
         key_impact = max(
             (item for item in impacts if item["skill_id"] in relevant_skills),
-            key=lambda item: (item["closes_gap"], item["critical"], item["gain"]),
+            key=lambda item: (item["closes_gap"], item["long_term_closes_gap"], item["critical"], item["gain"]),
         )
+        key_required = key_impact["required"] if key_impact["closes_gap"] else key_impact["long_term_required"]
+        key_goal = "" if key_impact["closes_gap"] else "Для долгосрочной цели — "
         reasons = [
             {
                 "code": "target",
-                "text": f"Цель: {state['target']['role']} · {state['target']['grade']}",
+                "text": (
+                    f"Цель: {state['target']['role']} · {state['target']['grade']}"
+                    if key_impact["closes_gap"] else
+                    f"Долгосрочная цель: {state['long_term_goal']['role']} · {state['long_term_goal']['grade']}"
+                ),
             },
             {
                 "code": "skill_gap",
                 "text": (
-                    f"{key_impact['name']}: сейчас {key_impact['before']}, "
-                    f"требуется {key_impact['required']}, после шага {key_impact['after']} "
+                    f"{key_goal}{key_impact['name']}: сейчас {key_impact['before']}, "
+                    f"требуется {key_required}, после шага {key_impact['after']} "
                     f"(+{key_impact['gain']})"
                 ),
             },
@@ -299,6 +373,32 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
         )
     candidates.sort(key=lambda c: (-c["score"], c["event_id"]))
     return candidates, dict(exclusions)
+
+
+def explain_candidate(candidate, candidate_count, local_rank, state):
+    """Summarize the verified impact and ranking without attributing motives to AI."""
+    focus = max(
+        (impact for impact in candidate["impacts"] if impact["closes_gap"] or impact["long_term_closes_gap"]),
+        key=lambda impact: (impact["closes_gap"], impact["long_term_closes_gap"], impact["critical"]),
+    )
+    if focus["closes_gap"]:
+        kind = "критичный разрыв" if focus["critical"] else "разрыв"
+        summary = (
+            f"Сокращает {kind} по навыку {focus['name']}: "
+            f"{focus['before']} → {focus['after']} при требовании {focus['required']}."
+        )
+    else:
+        goal = state["long_term_goal"]
+        goal_name = f"{goal['role']} · {goal['grade']}" if goal else "долгосрочной цели"
+        summary = (
+            f"Приближает долгосрочную цель {goal_name}: {focus['name']} "
+            f"{focus['before']} → {focus['after']} при требовании {focus['long_term_required']}."
+        )
+    summary += f" По локальному рейтингу — место {local_rank} из {candidate_count} допустимых шагов."
+    missed = candidate["factors"]["similar_missed"]
+    if missed:
+        summary += f" Пропуски похожих активностей ({missed}) уже снизили оценку этого шага."
+    return summary
 
 
 def choose_baseline(candidates, count=3):

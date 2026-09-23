@@ -19,7 +19,7 @@ import database
 from analytics import summarize_participation
 from ai_provider import rerank
 from config import DEMO_MODE
-from domain import REPEATABLE_EVENT, choose_baseline, eligible_candidates, progress
+from domain import REPEATABLE_EVENT, choose_baseline, critical_skill_blockers, eligible_candidates, explain_candidate, progress
 from ingestion import parse_employees, parse_history, validate_batch
 
 
@@ -152,9 +152,10 @@ async def recommendations(
         catalog = database.get_catalog(conn)
     state = progress(employee, records, completions, catalog)
     candidates, exclusions = eligible_candidates(employee, records, completions, catalog, state)
+    blocked_critical = critical_skill_blockers(employee, records, completions, catalog, state)
     relevant = [candidate for candidate in candidates if candidate["factors"]["weighted_gap_closure"] > 0 or candidate["factors"]["long_term_gap_closure"] > 0]
     if not relevant:
-        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
+        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "blocked_critical": blocked_critical, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
     rankable = relevant
     key_data = [employee, records, completions, catalog["version"], catalog["as_of_date"]]
     key = hashlib.sha256(json.dumps(key_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -164,11 +165,15 @@ async def recommendations(
     chosen, provider = await rerank(state, rankable)
     if chosen is None:
         chosen = [(candidate, [reason["code"] for reason in candidate["reasons"]]) for candidate in choose_baseline(rankable)]
+    local_ranks = {candidate["event_id"]: rank for rank, candidate in enumerate(rankable, 1)}
     items = [
-        {**candidate, "selected_reason_codes": codes, "explanation": " · ".join(reason["text"] for reason in candidate["reasons"] if reason["code"] in codes)}
+        {**candidate, "selected_reason_codes": codes,
+         "local_rank": local_ranks[candidate["event_id"]],
+         "selection_summary": explain_candidate(candidate, len(rankable), local_ranks[candidate["event_id"]], state),
+         "explanation": " · ".join(reason["text"] for reason in candidate["reasons"] if reason["code"] in codes)}
         for candidate, codes in chosen
     ]
-    result = {"items": items, "provider": provider, "excluded": exclusions, "candidate_count": len(candidates), "duration_ms": round((time.monotonic() - started) * 1000), "cached": False}
+    result = {"items": items, "provider": provider, "excluded": exclusions, "blocked_critical": blocked_critical, "candidate_count": len(candidates), "duration_ms": round((time.monotonic() - started) * 1000), "cached": False}
     if len(_recommendation_cache) > 500:
         _recommendation_cache.clear()
     _recommendation_cache[key] = (time.monotonic() + 300, result)
