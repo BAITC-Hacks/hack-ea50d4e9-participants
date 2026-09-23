@@ -182,6 +182,6 @@ async def rerank(state, candidates):
                 raw = await asyncio.wait_for(call(client, payload, timeout), timeout=timeout)
                 return _validate(raw, candidates), name
             except (asyncio.TimeoutError, httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-                LOGGER.warning("AI provider %s failed: %s", name, type(exc).__name__)
+                LOGGER.warning("AI provider %s failed: %s: %s", name, type(exc).__name__, str(exc)[:200])
                 continue
     return None, "fallback"
