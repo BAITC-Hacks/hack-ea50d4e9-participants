@@ -53,6 +53,7 @@ def _ai_pool(candidates, limit=8):
 
 
 def _request_payload(state, candidates):
+    local_ranks = {candidate["event_id"]: rank for rank, candidate in enumerate(candidates, 1)}
     return {
         "target": state["target"],
         "gaps": [
@@ -62,6 +63,8 @@ def _request_payload(state, candidates):
         "candidates": [
             {
                 "event_id": candidate["event_id"],
+                "local_rank": local_ranks[candidate["event_id"]],
+                "score": candidate["score"],
                 "title": candidate["title"],
                 "description": candidate["description"],
                 "factors": candidate["factors"],
@@ -87,10 +90,11 @@ def _validate(response, candidates):
         raise ValueError("AI must choose 1–3 events")
     pool = _ai_pool(candidates)
     allowed = {item["event_id"]: item for item in pool}
-    if any(item["factors"]["critical_gap_closure"] > 0 for item in pool):
-        first = allowed.get(response["choices"][0].get("event_id")) if isinstance(response["choices"][0], dict) else None
-        if first is None or first["factors"]["critical_gap_closure"] <= 0:
-            raise ValueError("AI must rank an available critical-gap activity first")
+    first = allowed.get(response["choices"][0].get("event_id")) if isinstance(response["choices"][0], dict) else None
+    if first is None or first["event_id"] not in {item["event_id"] for item in candidates[:3]}:
+        raise ValueError("AI first choice must be in the local top three")
+    if candidates[0]["factors"]["critical_gap_closure"] > 0 and first["factors"]["critical_gap_closure"] <= 0:
+        raise ValueError("AI must preserve the scored critical-gap priority")
     seen = set()
     result = []
     for choice in response["choices"]:
@@ -129,7 +133,8 @@ async def _openai(client, payload, timeout):
             "instructions": (
                 "Ты ранжируешь только допустимые учебные активности. Выбери 1–3 разных event_id. "
                 "Учитывай критичные разрывы, реальный прирост, историю и доступность. "
-                "Если есть кандидат с critical_gap_closure > 0, поставь такого кандидата первым. "
+                "Первый выбор сделай среди кандидатов с local_rank 1–3. "
+                "Если кандидат с local_rank 1 закрывает критичный разрыв, первым выбери шаг по критичному разрыву из этой тройки. "
                 "Для каждого выбора укажи минимум три разных reason_codes и соответствующие evidence_ids. "
                 "Не добавляй событий и фактов. Верни только структуру по схеме."
             ),
@@ -160,7 +165,8 @@ async def _nvidia(client, payload, timeout):
                     "each choice contains event_id, reason_codes, evidence_ids. "
                     "Reason codes: target, skill_gap, history, availability. "
                     "Use at least three distinct reason_codes per choice. "
-                    "If any candidate has critical_gap_closure > 0, rank one of them first. "
+                    "Choose the first event among local ranks 1-3. "
+                    "If local rank 1 closes a critical gap, put a critical-gap event from those ranks first. "
                     "Each evidence ID must be event_id:reason_code. Never invent facts or IDs."
                 )},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
