@@ -61,7 +61,9 @@ export default function App() {
   const [role, setRole] = useState<'employee' | 'hr'>('employee')
   const [view, setView] = useState<'profile' | 'hr' | 'import'>('profile')
   const [people, setPeople] = useState<Person[]>([])
-  const [selected, setSelected] = useState('')
+  // In employee mode the server only returns this selected profile; HR mode
+  // refreshes the directory and receives the full authorised list.
+  const [selected, setSelected] = useState('E0028')
   const [meta, setMeta] = useState<Meta | null>(null)
   const [detail, setDetail] = useState<Detail | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -92,10 +94,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    refreshDirectory().catch(err => setError(err.message))
-    // Directory is loaded once; later imports refresh it explicitly.
+    refreshDirectory(selected).catch(err => setError(err.message))
+    // Refresh on role changes so an employee never keeps the HR directory.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [role])
 
   useEffect(() => {
     if (!selected || view !== 'profile') return

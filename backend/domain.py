@@ -33,7 +33,9 @@ def choose_targets(employee, catalog):
         if goal and goal.get("target_role") and goal.get("target_grade")
         else None
     )
-    target = milestone or long_term or profile_for(catalog, employee["role"], current_grade)
+    # Never turn the current grade into a made-up destination.  If there is no
+    # next grade, only an explicit, valid career goal may define a trajectory.
+    target = milestone or long_term
     return {
         "target": target,
         "milestone": milestone,
@@ -208,7 +210,8 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
                     "critical": skill_id in critical,
                 }
             )
-        if not any(item["gain"] > 0 for item in impacts):
+        relevant_skills = set(requirements) | set(long_requirements)
+        if not any(item["gain"] > 0 and item["skill_id"] in relevant_skills for item in impacts):
             exclusions["no_gain"] += 1
             continue
 
@@ -219,6 +222,10 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
         history_signal = min(same_type_completed, 3) * 1.5 - min(same_event_missed, 3) * 4
         duration_penalty = min(event["duration_hours"], 20) * 0.3
         score = round(useful * 20 + critical_gain * 8 + long_gain * 4 + history_signal - duration_penalty, 2)
+        key_impact = max(
+            (item for item in impacts if item["skill_id"] in relevant_skills),
+            key=lambda item: (item["closes_gap"], item["critical"], item["gain"]),
+        )
         reasons = [
             {
                 "code": "target",
@@ -227,8 +234,9 @@ def eligible_candidates(employee, records, completions, catalog, state=None):
             {
                 "code": "skill_gap",
                 "text": (
-                    f"Сокращает разрыв на {sum(i['closes_gap'] for i in impacts)} ур."
-                    if useful else "Развивает навыки сверх текущих требований"
+                    f"{key_impact['name']}: сейчас {key_impact['before']}, "
+                    f"требуется {key_impact['required']}, после шага {key_impact['after']} "
+                    f"(+{key_impact['gain']})"
                 ),
             },
             {
