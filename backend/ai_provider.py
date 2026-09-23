@@ -30,8 +30,6 @@ CHOICE_SCHEMA = {
                     "reason_codes": {
                         "type": "array",
                         "items": {"type": "string", "enum": REASON_CODES},
-                        "minItems": 3,
-                        "uniqueItems": True,
                     },
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
                 },
@@ -117,6 +115,7 @@ async def _openai(client, payload, timeout):
             "instructions": (
                 "Ты ранжируешь только допустимые учебные активности. Выбери 1–3 разных event_id. "
                 "Учитывай критичные разрывы, реальный прирост, историю и доступность. "
+                "Для каждого выбора укажи минимум три разных reason_codes и соответствующие evidence_ids. "
                 "Не добавляй событий и фактов. Верни только структуру по схеме."
             ),
             "input": json.dumps(payload, ensure_ascii=False),
@@ -145,6 +144,7 @@ async def _nvidia(client, payload, timeout):
                     "Choose 1 to 3 valid event_id values. Return ONLY JSON object with choices array; "
                     "each choice contains event_id, reason_codes, evidence_ids. "
                     "Reason codes: target, skill_gap, history, availability. "
+                    "Use at least three distinct reason_codes per choice. "
                     "Each evidence ID must be event_id:reason_code. Never invent facts or IDs."
                 )},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

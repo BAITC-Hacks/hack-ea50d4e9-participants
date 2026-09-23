@@ -23,7 +23,7 @@ type Meta = { as_of_date: string; dataset_version: string; batches: { id: string
 
 const statusLabel: Record<string, string> = { completed: 'Завершено', in_progress: 'В процессе', dropped: 'Прервано', no_show: 'Пропуск', declined: 'Отказ', overdue: 'Просрочено', not_assigned: 'Не назначено' }
 const formatLabel: Record<string, string> = { online: 'Онлайн', offline: 'Очно', self_paced: 'Самостоятельно' }
-const exclusionLabel: Record<string, string> = { mandatory: 'обязательное', audience: 'не подходит по роли или грейду', prerequisites: 'не хватает входных навыков', completed: 'уже завершено', in_progress: 'уже в процессе', no_session: 'нет будущей сессии', repeat_cooldown: 'пауза между встречами', no_gain: 'не даёт прироста' }
+const exclusionLabel: Record<string, string> = { mandatory: 'обязательное', audience: 'не подходит по роли или грейду', prerequisites: 'не хватает входных навыков', completed: 'уже завершено', in_progress: 'уже в процессе', no_session: 'нет будущей сессии', repeat_cooldown: 'пауза между встречами', no_gain: 'не развивает нужные навыки', no_goal_gain: 'не сокращает разрыв до цели' }
 
 async function api<T>(path: string, role: string, employeeId: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
