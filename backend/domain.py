@@ -412,10 +412,51 @@ def choose_baseline(candidates, count=3):
     ]
     if count <= 0:
         return []
-    critical = next((candidate for candidate in relevant if candidate["factors"]["critical_gap_closure"] > 0), None)
-    if critical:
-        return [critical] + [candidate for candidate in relevant if candidate["event_id"] != critical["event_id"]][:count - 1]
     return relevant[:count]
+
+
+def unavailable_next_action(state, blocked_critical):
+    """Offer a concrete HR request when the catalog has no eligible course."""
+    target = state["target"]
+    if target is None:
+        return {
+            "title": "Согласовать карьерную цель с HR",
+            "description": "Без следующей цели нельзя подобрать обучение по требованиям грейда.",
+            "request_text": "Здравствуйте! Помогите определить мою следующую карьерную цель и подходящий план развития.",
+            "skill_id": None,
+        }
+    gap = next((item for item in state["gaps"] if item["gap"] > 0), None)
+    if gap is None:
+        return {
+            "title": "Согласовать следующую цель с HR",
+            "description": "Требования текущей цели по навыкам достигнуты; следующий шаг требует новой цели.",
+            "request_text": f"Здравствуйте! Требования к профилю {target['role']} · {target['grade']} по навыкам достигнуты. Помогите определить следующую цель развития.",
+            "skill_id": None,
+        }
+    blocked = next((item for item in blocked_critical if item["skill_id"] == gap["skill_id"]), None)
+    explanation = blocked["message"] if blocked else "В текущем каталоге нет подходящей доступной активности по этой цели."
+    return {
+        "title": f"Запросить у HR альтернативу для {gap['name']}",
+        "description": f"{gap['name']}: {gap['modelled']}/{gap['required']} для {target['role']} · {target['grade']}. {explanation}",
+        "request_text": (
+            f"Здравствуйте! Для цели {target['role']} · {target['grade']} мне нужно повысить "
+            f"{gap['name']} с {gap['modelled']} до {gap['required']}. "
+            "В каталоге сейчас нет доступной активности, сокращающей этот разрыв. "
+            "Помогите подобрать другую программу или индивидуальный план развития."
+        ),
+        "skill_id": gap["skill_id"],
+    }
+
+
+def completion_date_error(employee, event, completed_on, catalog):
+    """Validate a completion against the dataset snapshot and session dates."""
+    if completed_on > catalog["as_of_date"]:
+        return f"Нельзя отметить будущую дату: дата среза {catalog['as_of_date']}."
+    if completed_on <= employee["last_review_date"]:
+        return "Демо-завершение должно быть позже последней оценки навыков."
+    if event["format"] != "self_paced" and completed_on not in event["upcoming_sessions"]:
+        return "Для очной или онлайн-активности выберите дату состоявшейся сессии из каталога."
+    return None
 
 
 def next_step_status(state, candidates):

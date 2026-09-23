@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 from ai_provider import CHOICE_SCHEMA, _ai_pool, _request_payload, _validate  # noqa: E402
 from analytics import summarize_participation  # noqa: E402
-from domain import choose_baseline, eligible_candidates, next_step_status, progress  # noqa: E402
+from domain import choose_baseline, completion_date_error, eligible_candidates, next_step_status, progress, unavailable_next_action  # noqa: E402
 
 
 def catalog(events, profiles=None):
@@ -178,7 +178,7 @@ class DomainRequirementsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validate(response, candidates)
 
-    def test_critical_step_is_first_even_when_local_rank_exceeds_ai_limit(self):
+    def test_critical_step_does_not_override_history_weighted_rank(self):
         critical = event("CRITICAL", "system")
         critical["format"] = "online"
         critical["duration_hours"] = 20
@@ -194,16 +194,50 @@ class DomainRequirementsTests(unittest.TestCase):
         ]
         candidates, _ = eligible_candidates(employee(), misses, [], data)
         self.assertGreater(next(index for index, item in enumerate(candidates) if item["event_id"] == "CRITICAL"), 7)
-        self.assertEqual("CRITICAL", choose_baseline(candidates)[0]["event_id"])
+        self.assertEqual("PUBLIC_0", choose_baseline(candidates)[0]["event_id"])
         self.assertIn("CRITICAL", {item["event_id"] for item in _ai_pool(candidates)})
-        self.assertIn("CRITICAL", {item["event_id"] for item in _request_payload(progress(employee(), misses, [], data), candidates)["candidates"]})
+        payload = _request_payload(progress(employee(), misses, [], data), candidates)
+        self.assertEqual(10, next(item["local_rank"] for item in payload["candidates"] if item["event_id"] == "CRITICAL"))
         def choice(event_id):
             codes = ["target", "skill_gap", "history"]
             return {"event_id": event_id, "reason_codes": codes, "evidence_ids": [f"{event_id}:{code}" for code in codes]}
-        with self.assertRaisesRegex(ValueError, "critical-gap"):
-            _validate({"choices": [choice("PUBLIC_0"), choice("CRITICAL")]}, candidates)
-        selected = _validate({"choices": [choice("CRITICAL"), choice("PUBLIC_0")]}, candidates)
-        self.assertEqual("CRITICAL", selected[0][0]["event_id"])
+        selected = _validate({"choices": [choice("PUBLIC_0"), choice("CRITICAL")]}, candidates)
+        self.assertEqual("PUBLIC_0", selected[0][0]["event_id"])
+        with self.assertRaisesRegex(ValueError, "local top three"):
+            _validate({"choices": [choice("CRITICAL"), choice("PUBLIC_0")]}, candidates)
+
+    def test_ai_preserves_critical_priority_when_full_score_ranks_it_first(self):
+        data = catalog([event("CRITICAL", "system"), event("PUBLIC", "public")])
+        data["role_profiles"][1]["required_skills"]["public"] = 2
+        data["events"][1]["develops_skills"][0]["gain"] = 2
+        candidates, _ = eligible_candidates(employee(), [], [], data)
+        self.assertEqual("CRITICAL", candidates[0]["event_id"])
+        codes = ["target", "skill_gap", "history"]
+        choice = {"event_id": "PUBLIC", "reason_codes": codes, "evidence_ids": [f"PUBLIC:{code}" for code in codes]}
+        with self.assertRaisesRegex(ValueError, "scored critical-gap priority"):
+            _validate({"choices": [choice]}, candidates)
+
+    def test_unavailable_action_is_specific_and_not_a_fictitious_course(self):
+        state = progress(employee(), [], [], catalog([]))
+        action = unavailable_next_action(state, [])
+        self.assertEqual("system", action["skill_id"])
+        self.assertIn("2/4", action["description"])
+        self.assertIn("индивидуальный план", action["request_text"])
+        self.assertNotIn("event_id", action)
+        no_goal = progress(employee("Lead"), [], [], catalog([], [{"role": "Engineer", "grade": "Lead", "required_skills": {"system": 5}, "critical_skills": ["system"]}]))
+        self.assertIsNone(unavailable_next_action(no_goal, [])["skill_id"])
+
+    def test_completion_date_requires_elapsed_session_or_self_paced_course(self):
+        scheduled = event("SCHEDULED", "system")
+        scheduled["format"] = "online"
+        scheduled["upcoming_sessions"] = ["2026-10-16"]
+        data = catalog([scheduled])
+        self.assertIsNotNone(completion_date_error(employee(), scheduled, "2026-10-01", data))
+        self.assertIsNotNone(completion_date_error(employee(), scheduled, "2026-10-16", data))
+        scheduled["upcoming_sessions"].append("2026-10-01")
+        self.assertIsNone(completion_date_error(employee(), scheduled, "2026-10-01", data))
+        self.assertIsNone(completion_date_error(employee(), event("SELF", "system"), "2026-09-30", data))
+        self.assertIsNotNone(completion_date_error(employee(), event("SELF", "system"), "2026-01-01", data))
 
     def test_openai_schema_leaves_array_constraints_to_validator(self):
         reason_codes = CHOICE_SCHEMA["properties"]["choices"]["items"]["properties"]["reason_codes"]

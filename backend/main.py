@@ -7,6 +7,7 @@ import os
 import time
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 import psycopg
@@ -19,7 +20,7 @@ import database
 from analytics import summarize_participation
 from ai_provider import rerank
 from config import DEMO_MODE
-from domain import REPEATABLE_EVENT, choose_baseline, critical_skill_blockers, eligible_candidates, explain_candidate, next_step_status, progress
+from domain import REPEATABLE_EVENT, choose_baseline, completion_date_error, critical_skill_blockers, eligible_candidates, explain_candidate, next_step_status, progress, unavailable_next_action
 from ingestion import parse_employees, parse_history, validate_batch
 
 
@@ -113,7 +114,8 @@ def employee_detail(
     ]
     history.extend(
         {"event_id": completion["event_id"], "event_title": events.get(completion["event_id"], {}).get("title", completion["event_id"]),
-         "date": completion["completed_on"], "status": "completed", "source": "app"}
+         "date": completion["completed_on"], "status": "completed", "source": "app",
+         "occurrence_id": completion["occurrence_id"]}
         for completion in completions
     )
     history.sort(key=lambda row: row["date"], reverse=True)
@@ -155,7 +157,9 @@ async def recommendations(
     blocked_critical = critical_skill_blockers(employee, records, completions, catalog, state)
     relevant = [candidate for candidate in candidates if candidate["factors"]["weighted_gap_closure"] > 0 or candidate["factors"]["long_term_gap_closure"] > 0]
     if not relevant:
-        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "blocked_critical": blocked_critical, "candidate_count": 0, "duration_ms": round((time.monotonic() - started) * 1000)}
+        return {"items": [], "provider": "no_candidates", "excluded": exclusions, "blocked_critical": blocked_critical,
+                "next_action": unavailable_next_action(state, blocked_critical), "candidate_count": 0,
+                "duration_ms": round((time.monotonic() - started) * 1000)}
     rankable = relevant
     key_data = [employee, records, completions, catalog["version"], catalog["as_of_date"]]
     key = hashlib.sha256(json.dumps(key_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -173,7 +177,9 @@ async def recommendations(
          "explanation": " · ".join(reason["text"] for reason in candidate["reasons"] if reason["code"] in codes)}
         for candidate, codes in chosen
     ]
-    result = {"items": items, "provider": provider, "excluded": exclusions, "blocked_critical": blocked_critical, "candidate_count": len(candidates), "duration_ms": round((time.monotonic() - started) * 1000), "cached": False}
+    result = {"items": items, "provider": provider, "excluded": exclusions, "blocked_critical": blocked_critical,
+              "next_action": None, "candidate_count": len(candidates),
+              "duration_ms": round((time.monotonic() - started) * 1000), "cached": False}
     if len(_recommendation_cache) > 500:
         _recommendation_cache.clear()
     _recommendation_cache[key] = (time.monotonic() + 300, result)
@@ -181,7 +187,7 @@ async def recommendations(
 
 
 class CompletionRequest(BaseModel):
-    occurrence_id: str | None = None
+    completed_on: date | None = None
 
 
 @app.post("/api/employees/{employee_id}/activities/{event_id}/complete")
@@ -202,15 +208,45 @@ def complete_activity(
         candidate = next((item for item in candidates if item["event_id"] == event_id), None)
         if not candidate:
             raise HTTPException(409, "Активность сейчас недоступна или уже завершена")
-        occurrence_id = f"demo:{catalog['as_of_date']}" if event_id == REPEATABLE_EVENT else "once"
+        event = next(item for item in catalog["events"] if item["event_id"] == event_id)
+        completed_on = body.completed_on.isoformat() if body.completed_on else catalog["as_of_date"]
+        date_error = completion_date_error(employee, event, completed_on, catalog)
+        if date_error:
+            raise HTTPException(409, date_error)
+        occurrence_id = f"demo:{completed_on}" if event_id == REPEATABLE_EVENT else "once"
         try:
             conn.execute(
                 "INSERT INTO completions(employee_id,event_id,occurrence_id,completed_on) VALUES (%s,%s,%s,%s)",
-                (employee_id, event_id, occurrence_id, catalog["as_of_date"]),
+                (employee_id, event_id, occurrence_id, completed_on),
             )
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(409, "Завершение уже учтено") from exc
         updated = progress(employee, records, database.get_completions(conn, employee_id), catalog)
+    _recommendation_cache.clear()
+    return {"event_id": event_id, "occurrence_id": occurrence_id, "completed_on": completed_on, "progress": updated}
+
+
+@app.delete("/api/employees/{employee_id}/activities/{event_id}/complete")
+def undo_activity_completion(
+    employee_id: str,
+    event_id: str,
+    occurrence_id: str,
+    x_demo_role: str = Header("employee"),
+    x_demo_employee: str | None = Header(None),
+):
+    check_access(x_demo_role, x_demo_employee, employee_id)
+    with database.connect() as conn:
+        employee = load_employee(conn, employee_id)
+        deleted = conn.execute(
+            "DELETE FROM completions WHERE employee_id = %s AND event_id = %s AND occurrence_id = %s RETURNING event_id",
+            (employee_id, event_id, occurrence_id),
+        ).fetchone()
+        if not deleted:
+            raise HTTPException(404, "Демо-отметка не найдена")
+        updated = progress(
+            employee, database.get_records(conn, employee_id), database.get_completions(conn, employee_id),
+            database.get_catalog(conn),
+        )
     _recommendation_cache.clear()
     return {"event_id": event_id, "occurrence_id": occurrence_id, "progress": updated}
 
