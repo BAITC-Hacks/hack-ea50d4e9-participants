@@ -37,6 +37,8 @@ app = FastAPI(title="Career Quest API", lifespan=lifespan)
 def check_access(role, selected_employee, employee_id=None, hr=False):
     if not DEMO_MODE:
         raise HTTPException(503, "Требуется корпоративная авторизация; демо-режим выключен")
+    if role not in {"employee", "hr"}:
+        raise HTTPException(403, "Неизвестная демо-роль")
     if hr and role != "hr":
         raise HTTPException(403, "Доступ только для HR")
     if employee_id and role != "hr" and selected_employee != employee_id:
@@ -66,10 +68,18 @@ def meta():
 
 
 @app.get("/api/employees")
-def employees(batch_id: str | None = None, x_demo_role: str = Header("employee")):
+def employees(
+    batch_id: str | None = None,
+    x_demo_role: str = Header("employee"),
+    x_demo_employee: str | None = Header(None),
+):
     check_access(x_demo_role, None)
     with database.connect() as conn:
         result = database.list_employees(conn, batch_id)
+    if x_demo_role != "hr":
+        if not x_demo_employee:
+            raise HTTPException(403, "Не выбран профиль сотрудника")
+        result = [item for item in result if item["employee_id"] == x_demo_employee]
     return [
         {key: item.get(key) for key in ("employee_id", "full_name", "role", "grade", "department", "preferred_language")}
         for item in result
@@ -314,6 +324,9 @@ def hr_overview(
     for record in records:
         if record["employee_id"] in selected_ids:
             participation[record["event_id"]][record["status"]] += 1
+    for completion in completions:
+        if completion["employee_id"] in selected_ids:
+            participation[completion["event_id"]]["completed"] += 1
     event_names = {event["event_id"]: event["title"] for event in catalog["events"]}
     activities = [
         {"event_id": event_id, "title": event_names.get(event_id, event_id), "total": sum(counts.values()),
